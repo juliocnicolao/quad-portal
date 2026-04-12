@@ -30,7 +30,7 @@ def get_fx(pairs: list[str] | None = None) -> dict[str, dict]:
 
     joined = ",".join(pairs)
     try:
-        r = requests.get(f"{_BASE}/{joined}", timeout=8)
+        r = requests.get(f"{_BASE}/{joined}", timeout=15)
         r.raise_for_status()
         data = r.json()
         out = {}

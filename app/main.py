@@ -126,6 +126,16 @@ with st.spinner("Carregando dados..."):
     selic     = bcb.get_selic()
     ipca      = bcb.get_ipca_12m()
     fx_data   = fx_svc.get_fx(["USD-BRL", "EUR-BRL", "GBP-BRL", "ARS-BRL", "CHF-BRL", "JPY-BRL"])
+    # Fallback: se USD-BRL falhar, busca via yfinance
+    if fx_data.get("USD-BRL", {}).get("error"):
+        dolar_yf = yf_svc.get_quote("USDBRL=X")
+        if dolar_yf.get("price"):
+            fx_data["USD-BRL"] = {
+                "bid": dolar_yf["price"],
+                "mid": dolar_yf["price"],
+                "change_pct": dolar_yf.get("change_pct"),
+                "error": False
+            }
     ibov_hist = yf_svc.get_history("^BVSP",  period="6mo")
     dolar_hist = yf_svc.get_history("USDBRL=X", period="6mo")
 
