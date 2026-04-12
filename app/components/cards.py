@@ -1,7 +1,7 @@
 """Reusable metric cards — all HTML on single lines to avoid markdown parser issues."""
 
 import streamlit as st
-from app.utils import fmt_pct
+from utils import fmt_pct
 
 _C_POS = "#26a269"
 _C_NEG = "#C8232B"

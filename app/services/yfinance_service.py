@@ -3,7 +3,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-from app.utils import CACHE_TTL
+from utils import CACHE_TTL
 
 
 def _flatten(df: pd.DataFrame) -> pd.DataFrame:

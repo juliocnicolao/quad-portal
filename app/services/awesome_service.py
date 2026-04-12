@@ -2,7 +2,7 @@
 
 import streamlit as st
 import requests
-from app.utils import CACHE_TTL
+from utils import CACHE_TTL
 
 _BASE = "https://economia.awesomeapi.com.br/last"
 

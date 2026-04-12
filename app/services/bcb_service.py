@@ -3,7 +3,7 @@
 import streamlit as st
 import requests
 import pandas as pd
-from app.utils import CACHE_TTL
+from utils import CACHE_TTL
 
 _SGS = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.{code}/dados/ultimos/{n}?formato=json"
 _ANBIMA_CURVE = "https://www.anbima.com.br/informacoes/merc-sec/arqs/ms{date}.txt"

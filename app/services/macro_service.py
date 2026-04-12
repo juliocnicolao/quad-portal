@@ -10,7 +10,7 @@ import streamlit as st
 import requests
 import pandas as pd
 from fredapi import Fred
-from app.utils import FRED_API_KEY, CACHE_TTL
+from utils import FRED_API_KEY, CACHE_TTL
 
 _fred = Fred(api_key=FRED_API_KEY)
 _IMF  = "https://www.imf.org/external/datamapper/api/v1/{indicator}/{countries}"
