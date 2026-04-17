@@ -222,4 +222,57 @@ else:
         df_ret = pd.DataFrame(rows).sort_values("Retorno", ascending=False)
         st.dataframe(df_ret, use_container_width=True, hide_index=True)
 
+
+# ── Exportar snapshot HTML ────────────────────────────────────────────────────
+st.markdown("---")
+section_header("Exportar", "Snapshot HTML da watchlist atual (abre em qualquer navegador)")
+
+def _build_snapshot_html() -> str:
+    import datetime as _dt
+    rows_html = ""
+    for t in wl:
+        q = quotes[t]
+        label = TICKER_TO_LABEL.get(t, t)
+        if q.get("error") or q.get("price") is None:
+            rows_html += (f'<tr><td>{label}</td><td>{t}</td>'
+                          f'<td colspan="2" style="color:#C8232B;">indisponível</td></tr>')
+            continue
+        price = q["price"]
+        pct   = q.get("change_pct") or 0
+        css   = "pos" if pct >= 0 else "neg"
+        arrow = "▲" if pct >= 0 else "▼"
+        rows_html += (f'<tr><td>{label}</td><td>{t}</td>'
+                      f'<td><b>{price:,.2f}</b></td>'
+                      f'<td class="{css}">{arrow} {pct:+.2f}%</td></tr>')
+
+    return f"""<!doctype html><html lang="pt-BR"><head>
+<meta charset="utf-8"><title>QUAD Watchlist — Snapshot</title>
+<style>
+body{{font-family:system-ui,-apple-system,sans-serif;background:#0D0D0D;color:#F0F0F0;
+     padding:2rem;max-width:900px;margin:auto;}}
+h1{{color:#C8232B;font-size:1.4rem;margin:0;}}
+.sub{{color:#888;font-size:0.85rem;margin-bottom:1.5rem;}}
+table{{width:100%;border-collapse:collapse;font-size:0.9rem;}}
+th,td{{padding:0.6rem 0.8rem;border-bottom:1px solid #2a2a2a;text-align:left;}}
+th{{color:#888;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;}}
+.pos{{color:#26a269;font-weight:600;}}
+.neg{{color:#C8232B;font-weight:600;}}
+.footer{{color:#444;font-size:0.7rem;margin-top:2rem;text-align:center;}}
+@media print {{ body {{ background:white; color:black; }} .pos{{color:#070;}} .neg{{color:#C00;}} }}
+</style></head><body>
+<h1>QUAD Wealth — Watchlist Snapshot</h1>
+<div class="sub">Gerado em {_dt.datetime.now().strftime("%d/%m/%Y %H:%M")}</div>
+<table><thead><tr><th>Ativo</th><th>Ticker</th><th>Preço</th><th>Var. Dia</th></tr></thead>
+<tbody>{rows_html}</tbody></table>
+<div class="footer">Dados com atraso de até 15 minutos — não utilize para decisões de trading.</div>
+</body></html>"""
+
+st.download_button(
+    "📄 Baixar snapshot HTML",
+    data=_build_snapshot_html(),
+    file_name=f"quad-watchlist-{pd.Timestamp.now():%Y%m%d-%H%M}.html",
+    mime="text/html",
+    help="Arquivo HTML auto-contido. Abre em qualquer navegador; imprime como PDF via Ctrl+P."
+)
+
 render_footer()

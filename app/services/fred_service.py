@@ -2,10 +2,21 @@
 
 import streamlit as st
 import pandas as pd
-from fredapi import Fred
 from utils import FRED_API_KEY, CACHE_TTL
+from utils.logger import get_logger
 
-_fred = Fred(api_key=FRED_API_KEY)
+_log = get_logger(__name__)
+
+if FRED_API_KEY:
+    try:
+        from fredapi import Fred
+        _fred = Fred(api_key=FRED_API_KEY)
+    except Exception as e:
+        _log.warning("FRED API não inicializada: %s", e)
+        _fred = None
+else:
+    _log.warning("FRED_API_KEY ausente — FRED service degradado")
+    _fred = None
 
 # Treasury yield series IDs
 TREASURY_SERIES = {
@@ -33,6 +44,9 @@ def get_treasury_curve() -> pd.DataFrame:
     Returns latest Treasury yield curve as DataFrame
     with columns [maturity, yield_pct].
     """
+    if _fred is None:
+        return pd.DataFrame([{"maturidade": k, "yield_pct": None}
+                             for k in TREASURY_SERIES])
     rows = []
     for label, series_id in TREASURY_SERIES.items():
         try:
@@ -47,6 +61,8 @@ def get_treasury_curve() -> pd.DataFrame:
 @st.cache_data(ttl=CACHE_TTL, persist="disk")
 def get_treasury_history(series_id: str = "DGS10", years: int = 3) -> pd.DataFrame:
     """Historical yield for a single Treasury series."""
+    if _fred is None:
+        return pd.DataFrame()
     try:
         start = pd.Timestamp.today() - pd.DateOffset(years=years)
         s = _fred.get_series(series_id, observation_start=start.strftime("%Y-%m-%d"))
@@ -60,6 +76,8 @@ def get_treasury_history(series_id: str = "DGS10", years: int = 3) -> pd.DataFra
 @st.cache_data(ttl=CACHE_TTL)
 def get_latest_value(series_id: str) -> float | None:
     """Returns the most recent value of any FRED series."""
+    if _fred is None:
+        return None
     try:
         s = _fred.get_series(series_id)
         return float(s.dropna().iloc[-1])
@@ -82,6 +100,8 @@ def get_us_unemployment() -> dict:
 @st.cache_data(ttl=CACHE_TTL)
 def get_spread_10_2() -> dict:
     """10y - 2y spread (inversão da curva)."""
+    if _fred is None:
+        return {"value": None, "label": "Spread 10y-2y", "unit": "p.p."}
     try:
         s10 = _fred.get_series("DGS10").dropna().iloc[-1]
         s2  = _fred.get_series("DGS2").dropna().iloc[-1]

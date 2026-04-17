@@ -1,8 +1,11 @@
 """AwesomeAPI service — FX rates against BRL (free, no key required)."""
 
 import streamlit as st
-import requests
 from utils import CACHE_TTL
+from utils.http import get_json
+from utils.logger import get_logger
+
+_log = get_logger(__name__)
 
 _BASE = "https://economia.awesomeapi.com.br/last"
 
@@ -30,9 +33,9 @@ def get_fx(pairs: list[str] | None = None) -> dict[str, dict]:
 
     joined = ",".join(pairs)
     try:
-        r = requests.get(f"{_BASE}/{joined}", timeout=15)
-        r.raise_for_status()
-        data = r.json()
+        data = get_json(f"{_BASE}/{joined}", timeout=15, retries=2)
+        if data is None:
+            return {p: {"error": True} for p in pairs}
         out = {}
         for code, v in data.items():
             try:
@@ -51,4 +54,5 @@ def get_fx(pairs: list[str] | None = None) -> dict[str, dict]:
                 out[code] = {"error": True}
         return out
     except Exception as e:
+        _log.exception("AwesomeAPI parse falhou: %s", e)
         return {p: {"error": True, "msg": str(e)} for p in pairs}

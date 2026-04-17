@@ -1,9 +1,12 @@
 """BCB SGS service — Selic, IPCA, CDI, PIB, Desemprego and DI curve proxy."""
 
 import streamlit as st
-import requests
 import pandas as pd
 from utils import CACHE_TTL
+from utils.http import get_json
+from utils.logger import get_logger
+
+_log = get_logger(__name__)
 
 _SGS = "https://api.bcb.gov.br/dados/serie/bcdata.sgs.{code}/dados/ultimos/{n}?formato=json"
 _ANBIMA_CURVE = "https://www.anbima.com.br/informacoes/merc-sec/arqs/ms{date}.txt"
@@ -26,16 +29,10 @@ SGS_CODES = {
 @st.cache_data(ttl=CACHE_TTL)
 def get_serie(code: int, n: int = 1) -> list[dict]:
     """Fetch last `n` observations from BCB SGS. Returns list of {data, valor}."""
-    try:
-        r = requests.get(
-            _SGS.format(code=code, n=n),
-            timeout=15,
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-        )
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return []
+    data = get_json(_SGS.format(code=code, n=n),
+                    headers={"Accept": "application/json"},
+                    retries=2)
+    return data if isinstance(data, list) else []
 
 
 @st.cache_data(ttl=CACHE_TTL, persist="disk")
@@ -43,9 +40,7 @@ def get_ipca_history_sidra(n: int = 24) -> pd.DataFrame:
     """Fallback: IBGE SIDRA API for IPCA mensal (tabela 1737, variavel 63)."""
     try:
         url = f"https://apisidra.ibge.gov.br/values/t/1737/n1/all/v/63/p/last%20{n}?formato=json"
-        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
-        r.raise_for_status()
-        data = r.json()
+        data = get_json(url, retries=2)
         if not data or len(data) < 2:
             return pd.DataFrame()
         rows = []
@@ -64,7 +59,8 @@ def get_ipca_history_sidra(n: int = 24) -> pd.DataFrame:
         if not rows:
             return pd.DataFrame()
         return pd.DataFrame(rows).sort_values("data").reset_index(drop=True)
-    except Exception:
+    except Exception as e:
+        _log.exception("SIDRA IPCA falhou: %s", e)
         return pd.DataFrame()
 
 

@@ -1,11 +1,19 @@
 """Utility helpers: formatters, cache config, constants."""
 
+import os
 import streamlit as st
 
-try:
-    FRED_API_KEY = st.secrets["FRED_API_KEY"]
-except Exception:
-    FRED_API_KEY = "586d413968f0f9ad258273cb9c7aef8b"  # fallback local
+# FRED API key — ordem: st.secrets → env var → None (service degrada)
+def _load_fred_key() -> str | None:
+    try:
+        v = st.secrets.get("FRED_API_KEY")
+        if v:
+            return v
+    except Exception:
+        pass
+    return os.environ.get("FRED_API_KEY")
+
+FRED_API_KEY = _load_fred_key()
 CACHE_TTL    = 900  # 15 minutes in seconds
 
 # Accent palette

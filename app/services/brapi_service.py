@@ -1,8 +1,11 @@
 """Brapi.dev service — Ibovespa and Brazilian equity tickers (15min delay, free tier)."""
 
 import streamlit as st
-import requests
 from utils import CACHE_TTL
+from utils.http import get_json
+from utils.logger import get_logger
+
+_log = get_logger(__name__)
 
 _BASE = "https://brapi.dev/api"
 
@@ -11,9 +14,10 @@ _BASE = "https://brapi.dev/api"
 def get_quote(ticker: str) -> dict:
     """Single BR ticker quote from Brapi."""
     try:
-        r = requests.get(f"{_BASE}/quote/{ticker}", timeout=8)
-        r.raise_for_status()
-        data = r.json()["results"][0]
+        payload = get_json(f"{_BASE}/quote/{ticker}", timeout=8, retries=1)
+        if not payload or not payload.get("results"):
+            return {"ticker": ticker, "price": None, "change_pct": None, "error": True}
+        data = payload["results"][0]
         price      = data.get("regularMarketPrice")
         prev       = data.get("regularMarketPreviousClose")
         change_pct = data.get("regularMarketChangePercent")
@@ -35,9 +39,10 @@ def get_quotes(tickers: list[str]) -> dict[str, dict]:
     """Bulk BR quotes. Returns {ticker: quote_dict}."""
     joined = ",".join(tickers)
     try:
-        r = requests.get(f"{_BASE}/quote/{joined}", timeout=10)
-        r.raise_for_status()
-        results = r.json().get("results", [])
+        payload = get_json(f"{_BASE}/quote/{joined}", timeout=10, retries=2)
+        if not payload:
+            return {t: {"ticker": t, "price": None, "error": True} for t in tickers}
+        results = payload.get("results", [])
         out = {}
         for data in results:
             t = data.get("symbol", "")
@@ -59,10 +64,11 @@ def get_quotes(tickers: list[str]) -> dict[str, dict]:
 def get_ibov_components() -> list[dict]:
     """Top Ibovespa movers (gainers + losers) via Brapi."""
     try:
-        r = requests.get(f"{_BASE}/quote/list?sortBy=change&limit=10", timeout=10)
-        r.raise_for_status()
-        return r.json().get("stocks", [])
-    except Exception:
+        payload = get_json(f"{_BASE}/quote/list?sortBy=change&limit=10",
+                           timeout=10, retries=1)
+        return (payload or {}).get("stocks", [])
+    except Exception as e:
+        _log.exception("brapi movers falhou: %s", e)
         return []
 
 

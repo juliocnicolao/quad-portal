@@ -6,11 +6,14 @@ Fontes:
 """
 
 import streamlit as st
-import requests
 import pandas as pd
-from io import StringIO, BytesIO
+from io import BytesIO
 from utils import CACHE_TTL
+from utils.http import get_bytes
+from utils.logger import get_logger
 from services import data_service as data
+
+_log = get_logger(__name__)
 
 
 _TD_URL = ("https://www.tesourotransparente.gov.br/ckan/dataset/"
@@ -24,10 +27,10 @@ def get_tesouro_direto() -> pd.DataFrame:
     """Baixa e filtra o CSV público do Tesouro Direto.
     Retorna DataFrame com últimas taxas por título."""
     try:
-        r = requests.get(_TD_URL, timeout=25,
-                         headers={"User-Agent": "Mozilla/5.0"})
-        r.raise_for_status()
-        df = pd.read_csv(BytesIO(r.content), sep=";", decimal=",",
+        content = get_bytes(_TD_URL, timeout=25, retries=2)
+        if content is None:
+            return pd.DataFrame()
+        df = pd.read_csv(BytesIO(content), sep=";", decimal=",",
                          parse_dates=["Data Base", "Data Vencimento"],
                          dayfirst=True)
         if df.empty:
@@ -41,7 +44,8 @@ def get_tesouro_direto() -> pd.DataFrame:
         df = df[df["Data Vencimento"] > today]
         df = df.sort_values(["Tipo Titulo", "Data Vencimento"]).reset_index(drop=True)
         return df
-    except Exception:
+    except Exception as e:
+        _log.exception("Tesouro Direto CSV falhou: %s", e)
         return pd.DataFrame()
 
 

@@ -7,12 +7,24 @@ Net Debt/GDP: IMF WEO 2024 Oct — updated annually, stored as static fallback.
 import math
 import datetime
 import streamlit as st
-import requests
 import pandas as pd
-from fredapi import Fred
 from utils import FRED_API_KEY, CACHE_TTL
+from utils.http import get_json
+from utils.logger import get_logger
 
-_fred = Fred(api_key=FRED_API_KEY)
+_log = get_logger(__name__)
+
+# Fred só é inicializado se houver chave (evita crash em ambiente sem secret)
+if FRED_API_KEY:
+    try:
+        from fredapi import Fred
+        _fred = Fred(api_key=FRED_API_KEY)
+    except Exception as e:
+        _log.warning("FRED API não inicializada: %s", e)
+        _fred = None
+else:
+    _log.warning("FRED_API_KEY ausente — séries US degradadas")
+    _fred = None
 _IMF  = "https://www.imf.org/external/datamapper/api/v1/{indicator}/{countries}"
 
 # Cap IMF data: GDP/Debt → previous year (actuals), Inflation → current year
@@ -55,9 +67,10 @@ def _fetch_imf(indicator: str, max_year: str = _MAX_YEAR) -> dict[str, float]:
     """
     try:
         url = _IMF.format(indicator=indicator, countries=_IMF_CODES)
-        r   = requests.get(url, timeout=12)
-        r.raise_for_status()
-        raw = r.json().get("values", {}).get(indicator, {})
+        payload = get_json(url, timeout=12, retries=2)
+        if not payload:
+            return {}
+        raw = payload.get("values", {}).get(indicator, {})
         out = {}
         for code, years in raw.items():
             if years:
@@ -75,6 +88,8 @@ def _fetch_imf(indicator: str, max_year: str = _MAX_YEAR) -> dict[str, float]:
 @st.cache_data(ttl=CACHE_TTL * 4, persist="disk")   # 1 hour — CPI releases monthly
 def _fetch_fred_cpi_yoy() -> float | None:
     """US CPI YoY % — FRED CPIAUCSL (real monthly data, not IMF projection)."""
+    if _fred is None:
+        return None
     try:
         s = _fred.get_series("CPIAUCSL")
         yoy = s.pct_change(12) * 100
@@ -88,19 +103,24 @@ def _fetch_fred_cpi_yoy() -> float | None:
 def _fetch_bcb_ipca_12m() -> float | None:
     """Brazil IPCA acumulado 12 meses — BCB série 13522."""
     try:
-        r = requests.get(
+        payload = get_json(
             "https://api.bcb.gov.br/dados/serie/bcdata.sgs.13522"
-            "/dados/ultimos/1?formato=json", timeout=8
+            "/dados/ultimos/1?formato=json", timeout=8, retries=2,
         )
-        val = r.json()[0]["valor"]
+        if not payload:
+            return None
+        val = payload[0]["valor"]
         result = float(str(val).replace(",", "."))
         return None if math.isnan(result) else result
-    except Exception:
+    except Exception as e:
+        _log.warning("BCB IPCA 12m falhou: %s", e)
         return None
 
 
 @st.cache_data(ttl=CACHE_TTL * 4, persist="disk")   # 1 hour — rates change monthly at most
 def _fetch_fred_rate(series_id: str) -> float | None:
+    if _fred is None:
+        return None
     try:
         s = _fred.get_series(series_id)
         val = float(s.dropna().iloc[-1])
@@ -112,14 +132,17 @@ def _fetch_fred_rate(series_id: str) -> float | None:
 @st.cache_data(ttl=CACHE_TTL)
 def _fetch_bcb_rate(code: int) -> float | None:
     try:
-        r = requests.get(
+        payload = get_json(
             f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{code}"
-            "/dados/ultimos/1?formato=json", timeout=8
+            "/dados/ultimos/1?formato=json", timeout=8, retries=2,
         )
-        val = r.json()[0]["valor"]
+        if not payload:
+            return None
+        val = payload[0]["valor"]
         result = float(str(val).replace(",", "."))
         return None if math.isnan(result) else result
-    except Exception:
+    except Exception as e:
+        _log.warning("BCB rate %s falhou: %s", code, e)
         return None
 
 

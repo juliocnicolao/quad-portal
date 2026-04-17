@@ -3,9 +3,12 @@ Stooq provides free CSV quotes and historical data, very reliable on cloud."""
 
 import streamlit as st
 import pandas as pd
-import requests
 from io import StringIO
 from utils import CACHE_TTL
+from utils.http import get_text
+from utils.logger import get_logger
+
+_log = get_logger(__name__)
 
 
 # Map yfinance-style tickers → Stooq symbols
@@ -43,10 +46,10 @@ def get_quote(ticker: str) -> dict:
     symbol = _to_stooq(ticker)
     url = f"https://stooq.com/q/l/?s={symbol}&f=sd2t2ohlcv&h&e=csv"
     try:
-        r = requests.get(url, timeout=10,
-                         headers={"User-Agent": "Mozilla/5.0"})
-        r.raise_for_status()
-        df = pd.read_csv(StringIO(r.text))
+        text = get_text(url, timeout=10, retries=1)
+        if text is None:
+            return {"ticker": ticker, "price": None, "error": True}
+        df = pd.read_csv(StringIO(text))
         if df.empty or "Close" not in df.columns:
             return {"ticker": ticker, "price": None, "error": True}
         row = df.iloc[0]
@@ -76,10 +79,10 @@ def get_history(ticker: str, period: str = "6mo") -> pd.DataFrame:
     # Stooq aceita periodo via d (daily). Vamos puxar tudo e filtrar.
     url = f"https://stooq.com/q/d/l/?s={symbol}&i=d"
     try:
-        r = requests.get(url, timeout=15,
-                         headers={"User-Agent": "Mozilla/5.0"})
-        r.raise_for_status()
-        df = pd.read_csv(StringIO(r.text))
+        text = get_text(url, timeout=15, retries=1)
+        if text is None:
+            return pd.DataFrame()
+        df = pd.read_csv(StringIO(text))
         if df.empty or "Date" not in df.columns:
             return pd.DataFrame()
         df["Date"] = pd.to_datetime(df["Date"])
