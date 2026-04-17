@@ -6,7 +6,7 @@ st.set_page_config(page_title="Brasil | QUAD", page_icon="🌎",
                    layout="wide", initial_sidebar_state="expanded")
 
 from components.layout      import inject_css, render_sidebar, render_footer, page_header
-from components.cards       import section_header, metric_card, error_card
+from components.cards       import section_header, metric_card, error_card, format_age
 from components.charts      import line_chart, bar_movers
 from components.detail_panel import render_detail
 from services               import brapi_service as brapi
@@ -39,7 +39,9 @@ with st.spinner("Carregando dados do Brasil..."):
 
 
 # ── Ibovespa hero ─────────────────────────────────────────────────────────────
-section_header("Ibovespa", "Índice da Bolsa de Valores do Brasil — B3")
+section_header("Ibovespa", "Índice da Bolsa de Valores do Brasil — B3",
+               timestamp=format_age(ibov.get("fetched_at")),
+               source=ibov.get("source"))
 col_card, col_chart = st.columns([1, 3])
 
 with col_card:
@@ -140,16 +142,28 @@ section_header("Top Ativos — Liquidez", "Volume financeiro médio (3 meses)")
 LIQUID = ["PETR4","VALE3","ITUB4","BBDC4","BBAS3",
           "B3SA3","ELET3","WEGE3","ABEV3","SUZB3"]
 
-import yfinance as yf
-
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=900, persist="disk")
 def _get_volume(tickers):
+    """Usa data.history (yfinance->stooq) para calcular preco atual e volume
+    medio de 3 meses. Estavel no Streamlit Cloud (fast_info e bloqueado)."""
     rows = []
     for t in tickers:
         try:
-            fi = yf.Ticker(t + ".SA").fast_info
-            rows.append({"Ativo": t, "_price": fi.last_price or 0,
-                         "_vol": fi.three_month_average_volume or 0})
+            df = data.history(t + ".SA", period="3mo")
+            if df.empty or "Close" not in df.columns:
+                rows.append({"Ativo": t, "_price": 0, "_vol": 0})
+                continue
+            closes = df["Close"].dropna()
+            vols   = df["Volume"].dropna() if "Volume" in df.columns else None
+            price  = float(closes.iloc[-1]) if len(closes) else 0
+            # volume medio financeiro ~ volume * preco medio
+            if vols is not None and len(vols):
+                avg_vol = float(vols.mean())
+                avg_px  = float(closes.tail(len(vols)).mean())
+                fin_vol = avg_vol * avg_px
+            else:
+                fin_vol = 0
+            rows.append({"Ativo": t, "_price": price, "_vol": fin_vol})
         except Exception:
             rows.append({"Ativo": t, "_price": 0, "_vol": 0})
     return rows
@@ -158,7 +172,9 @@ rows = _get_volume(LIQUID)
 df_liq = pd.DataFrame(rows).sort_values("_vol", ascending=False)
 df_liq["Preço"]         = df_liq["_price"].map(lambda v: f"R$ {v:.2f}" if v else "—")
 df_liq["Vol. Médio 3m"] = df_liq["_vol"].map(
-    lambda v: f"{v/1e6:.1f}M" if v >= 1e6 else f"{v/1e3:.0f}K" if v else "—")
+    lambda v: f"R$ {v/1e9:.2f}B" if v >= 1e9
+    else f"R$ {v/1e6:.0f}M" if v >= 1e6
+    else f"R$ {v/1e3:.0f}K" if v else "—")
 df_liq["Var. Dia"]      = df_liq["Ativo"].map(
     lambda t: fmt_pct(quotes[t]["change_pct"])
     if t in quotes and not quotes[t].get("error")

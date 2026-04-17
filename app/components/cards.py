@@ -19,16 +19,19 @@ def metric_card(
     change_pct: float | None = None,
     hint: str | None = None,
     tooltip: str | None = None,
+    subvalue: str | None = None,
 ):
     color      = _C_POS if (change_pct or 0) >= 0 else _C_NEG
     delta_part = f'<span style="{_DELTA}color:{color};">{fmt_pct(change_pct)}</span>' if change_pct is not None else ""
     hint_part  = f'<div style="{_HINT}">{hint}</div>' if hint else ""
     tip        = f' title="{tooltip}"' if tooltip else ""
+    sub_part   = (f'<div style="font-size:0.75rem;color:#999;margin-top:0.15rem;">'
+                  f'≈ {subvalue}</div>') if subvalue else ""
 
-    # Single-line HTML — prevents markdown from breaking the block into paragraphs
     html = (f'<div style="{_CARD}"{tip}>'
             f'<div style="{_LABEL}">{label}</div>'
             f'<div style="{_VALUE}">{value}</div>'
+            f'{sub_part}'
             f'{delta_part}{hint_part}'
             f'</div>')
     st.markdown(html, unsafe_allow_html=True)
@@ -78,10 +81,32 @@ def freshness_badge(source: str | None, fetched_at: float | None = None) -> str:
             f'{source}{age}</span>')
 
 
-def section_header(title: str, subtitle: str | None = None):
-    sub = f'<div style="font-size:0.8rem;color:#666;margin-top:0.2rem;">{subtitle}</div>' if subtitle else ""
-    html = (f'<div style="margin:1.5rem 0 0.75rem 0;">'
-            f'<div style="font-size:1rem;font-weight:700;color:#F0F0F0;'
-            f'border-left:3px solid #C8232B;padding-left:0.6rem;">{title}</div>'
-            f'{sub}</div>')
+def section_header(title: str, subtitle: str | None = None,
+                   timestamp: str | None = None, source: str | None = None):
+    """Cabecalho de secao. Se timestamp/source passados, mostra badge a direita."""
+    sub = (f'<div class="section-header-sub">{subtitle}</div>'
+           if subtitle else "")
+    ts_html = ""
+    if timestamp:
+        src = f"{source} · " if source else ""
+        ts_html = (f'<div class="section-timestamp">{src}atualizado {timestamp}</div>')
+    html = (f'<div class="section-header-row">'
+            f'<div>'
+            f'<div class="section-header-title">{title}</div>'
+            f'{sub}'
+            f'</div>'
+            f'{ts_html}'
+            f'</div>')
     st.markdown(html, unsafe_allow_html=True)
+
+
+def format_age(fetched_at: float | None) -> str:
+    """Converte timestamp Unix em 'ha X min' legivel."""
+    import time as _t
+    if not fetched_at:
+        return "—"
+    secs = int(_t.time() - fetched_at)
+    if secs < 60:  return "agora"
+    if secs < 3600: return f"há {secs // 60} min"
+    hrs = secs // 3600
+    return f"há {hrs}h"

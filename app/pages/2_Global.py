@@ -6,13 +6,14 @@ st.set_page_config(page_title="Global | QUAD", page_icon="🌐",
                    layout="wide", initial_sidebar_state="expanded")
 
 from components.layout       import inject_css, render_sidebar, render_footer, page_header
-from components.cards        import section_header, metric_card, error_card
+from components.cards        import section_header, metric_card, error_card, format_age
 from components.charts       import yield_curve_chart, line_chart
 from components.detail_panel import render_detail
 from services                import yfinance_service as yf_svc
 from services                import fred_service     as fred
 from services                import data_service     as data
-from utils                   import fmt_currency_usd, fmt_points
+from services                import awesome_service  as fx_svc
+from utils                   import fmt_currency_usd, fmt_currency_brl, fmt_points
 
 TRIED = ["yfinance", "stooq"]
 
@@ -49,6 +50,16 @@ def _fmt_value(ticker):
     p = q["price"]
     return fmt_points(p) + " pts" if ticker.startswith("^") else fmt_currency_usd(p)
 
+# Cotacao USD/BRL p/ equivalente em reais (opcional via sidebar)
+_fx      = fx_svc.get_fx(["USD-BRL"]).get("USD-BRL", {})
+_usd_brl = _fx.get("mid") or _fx.get("bid")
+_show_brl = bool(st.session_state.get("show_brl_equiv")) and _usd_brl
+
+def _brl_equiv(usd_value):
+    if not _show_brl or usd_value is None:
+        return None
+    return fmt_currency_brl(usd_value * _usd_brl)
+
 def _card(col, label, ticker, hint="", tooltip=""):
     with col:
         val = _fmt_value(ticker)
@@ -56,11 +67,17 @@ def _card(col, label, ticker, hint="", tooltip=""):
         if val is None:
             error_card(label, tried=TRIED)
         else:
-            metric_card(label, val, q.get("change_pct"), hint=hint, tooltip=tooltip)
+            # indice (^XXX) em pontos nao converte; acoes em USD sim
+            sub = None if ticker.startswith("^") else _brl_equiv(q.get("price"))
+            metric_card(label, val, q.get("change_pct"),
+                        hint=hint, tooltip=tooltip, subvalue=sub)
 
 
 # ── Row 1 ─────────────────────────────────────────────────────────────────────
-section_header("Índices & Ações", "Cotações em tempo real (delay 15 min)")
+_sources = sorted({q.get("source") for q in quotes.values() if q.get("source") and q.get("source") != "none"})
+_age = format_age(max((q.get("fetched_at") or 0) for q in quotes.values()))
+section_header("Índices & Ações", "Cotações em tempo real (delay 15 min)",
+               timestamp=_age, source=" · ".join(_sources) if _sources else None)
 cols = st.columns(5)
 for col, (label, ticker, hint, tooltip) in zip(cols, [
     ("S&P 500", "^GSPC", "500 maiores empresas EUA",       "Índice de referência do mercado americano"),

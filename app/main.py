@@ -60,6 +60,39 @@ st.markdown("""
 
 hr { border-color: #2a2a2a; }
 
+/* ── Section header com timestamp ───────────────────────────────────────── */
+.section-header-row {
+    display:flex; justify-content:space-between; align-items:flex-end;
+    margin:1.5rem 0 0.75rem 0; gap:0.75rem; flex-wrap:wrap;
+}
+.section-header-title {
+    font-size:1rem; font-weight:700; color:#F0F0F0;
+    border-left:3px solid #C8232B; padding-left:0.6rem;
+}
+.section-header-sub { font-size:0.8rem; color:#666; margin-top:0.2rem; }
+.section-timestamp {
+    font-size:0.6rem; color:#888; background:#1f1f1f;
+    padding:3px 8px; border-radius:4px; letter-spacing:0.05em;
+    white-space:nowrap;
+}
+
+/* ── Mobile breakpoints ─────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+    .block-container { padding-left:0.6rem !important; padding-right:0.6rem !important; }
+    .page-title { font-size:1.25rem !important; }
+    .page-subtitle { font-size:0.75rem !important; }
+    .metric-card { padding:0.7rem 0.85rem !important; }
+    .metric-card .card-value { font-size:1.15rem !important; }
+    .fx-table { font-size:0.78rem; }
+    .fx-table th, .fx-table td { padding:0.35rem 0.45rem; }
+    .section-header-row { flex-direction:column; align-items:flex-start; }
+    [data-testid="stSidebar"] { min-width:240px; }
+}
+@media (max-width: 480px) {
+    .metric-card .card-value { font-size:1rem !important; }
+    .section-header-title { font-size:0.9rem !important; }
+}
+
 .fx-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
 .fx-table th {
     color: #888; font-size: 0.65rem; text-transform: uppercase;
@@ -78,7 +111,7 @@ hr { border-color: #2a2a2a; }
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from components.cards  import metric_card, section_header, error_card, freshness_badge
+from components.cards  import metric_card, section_header, error_card, freshness_badge, format_age
 from components.charts import line_chart, yield_curve_chart
 from services          import yfinance_service as yf_svc
 from services          import brapi_service    as brapi
@@ -143,15 +176,29 @@ with st.spinner("Carregando dados..."):
 
 
 # ── Row 1: Hero cards ─────────────────────────────────────────────────────────
-section_header("Mercados", "Principais índices e ativos")
+_mkt_sources = {q.get("source") for q in [ibov, sp500, btc, wti, ouro] if q.get("source")}
+_mkt_src = " · ".join(sorted(_mkt_sources)) if _mkt_sources else None
+_mkt_age = format_age(max((q.get("fetched_at") or 0) for q in [ibov, sp500, btc, wti, ouro]))
+section_header("Mercados", "Principais índices e ativos",
+               timestamp=_mkt_age, source=_mkt_src)
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 
-def _card(col, label, value, change_pct, hint=None, tooltip=None):
+def _card(col, label, value, change_pct, hint=None, tooltip=None, subvalue=None):
     with col:
         if value is None:
             error_card(label, tried=TRIED)
         else:
-            metric_card(label, value, change_pct, hint, tooltip)
+            metric_card(label, value, change_pct, hint, tooltip, subvalue=subvalue)
+
+
+# Cotacao USD/BRL p/ conversao de equivalente em reais
+_usd_brl = fx_data.get("USD-BRL", {}).get("mid") or fx_data.get("USD-BRL", {}).get("bid")
+_show_brl = bool(st.session_state.get("show_brl_equiv")) and _usd_brl
+
+def _brl_equiv(usd_value: float | None) -> str | None:
+    if not _show_brl or usd_value is None:
+        return None
+    return fmt_currency_brl(usd_value * _usd_brl)
 
 _card(c1, "Ibovespa",
       fmt_points(ibov["price"]) + " pts" if ibov["price"] else None,
@@ -181,20 +228,23 @@ _card(c5, "Bitcoin",
       fmt_currency_usd(btc["price"]) if btc["price"] else None,
       btc.get("change_pct"),
       hint="BTC/USD",
-      tooltip="Preço do Bitcoin em dólares americanos")
+      tooltip="Preço do Bitcoin em dólares americanos",
+      subvalue=_brl_equiv(btc.get("price")))
 
 _card(c6, "Petróleo WTI",
       fmt_currency_usd(wti["price"]) if wti["price"] else None,
       wti.get("change_pct"),
       hint="Futuro WTI",
-      tooltip="Contrato futuro de petróleo West Texas Intermediate")
+      tooltip="Contrato futuro de petróleo West Texas Intermediate",
+      subvalue=_brl_equiv(wti.get("price")))
 
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 
 # ── Row 2: Mini charts ────────────────────────────────────────────────────────
-section_header("Evolução Recente", "Últimos 6 meses")
+_hist_src = ibov_hist.attrs.get("source") if hasattr(ibov_hist, "attrs") else None
+section_header("Evolução Recente", "Últimos 6 meses", source=_hist_src)
 ch1, ch2 = st.columns(2)
 
 with ch1:

@@ -6,13 +6,23 @@ st.set_page_config(page_title="Cripto | QUAD", page_icon="🪙",
                    layout="wide", initial_sidebar_state="expanded")
 
 from components.layout import inject_css, render_sidebar, render_footer, page_header
-from components.cards  import section_header, metric_card, error_card
+from components.cards  import section_header, metric_card, error_card, format_age
 from components.charts import line_chart, multi_line_chart  # multi_line_chart restaurado em charts.py
 from services          import yfinance_service as yf_svc
 from services          import data_service     as data
-from utils             import fmt_currency_usd, fmt_pct
+from services          import awesome_service  as fx_svc
+from utils             import fmt_currency_usd, fmt_currency_brl, fmt_pct
 
 TRIED = ["yfinance", "stooq"]
+
+_fx       = fx_svc.get_fx(["USD-BRL"]).get("USD-BRL", {})
+_usd_brl  = _fx.get("mid") or _fx.get("bid")
+_show_brl = bool(st.session_state.get("show_brl_equiv")) and _usd_brl
+
+def _brl_equiv(usd_value):
+    if not _show_brl or usd_value is None:
+        return None
+    return fmt_currency_brl(usd_value * _usd_brl)
 import requests
 import pandas as pd
 
@@ -50,7 +60,11 @@ with st.spinner("Carregando criptoativos..."):
 
 
 # ── Hero cards ────────────────────────────────────────────────────────────────
-section_header("Principais Criptoativos", "Preços em USD com variação do dia")
+_quotes_all = [btc, eth, bnb, sol]
+_sources    = sorted({q.get("source") for q in _quotes_all if q.get("source") and q.get("source") != "none"})
+_age        = format_age(max((q.get("fetched_at") or 0) for q in _quotes_all))
+section_header("Principais Criptoativos", "Preços em USD com variação do dia",
+               timestamp=_age, source=" · ".join(_sources) if _sources else None)
 c1, c2, c3, c4 = st.columns(4)
 
 def _card(col, label, q, hint="", tooltip=""):
@@ -59,7 +73,8 @@ def _card(col, label, q, hint="", tooltip=""):
             error_card(label, tried=TRIED)
         else:
             metric_card(label, fmt_currency_usd(q["price"]),
-                        q.get("change_pct"), hint=hint, tooltip=tooltip)
+                        q.get("change_pct"), hint=hint, tooltip=tooltip,
+                        subvalue=_brl_equiv(q["price"]))
 
 _card(c1, "Bitcoin (BTC)",  btc, "BTC/USD",
       "A maior criptomoeda por capitalização de mercado")
