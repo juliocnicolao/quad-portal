@@ -31,11 +31,39 @@ TICKERS = [
     "CSNA3","EMBR3","LREN3","HAPV3","RADL3",
 ]
 
+@st.cache_data(ttl=600, persist="disk")
+def _get_br_quotes_cascade(tickers: list[str]) -> dict:
+    """Cascata brapi (PETRE4) -> yfinance (PETR4.SA) -> stooq (PETR4.SA)."""
+    # 1) Bulk brapi primeiro (mais rapido se funcionar)
+    try:
+        bulk = brapi.get_quotes(tickers)
+    except Exception:
+        bulk = {}
+
+    out = {}
+    for t in tickers:
+        q = bulk.get(t) if bulk else None
+        if q and not q.get("error") and q.get("change_pct") is not None:
+            out[t] = q
+            continue
+        # Fallback: yfinance / stooq com sufixo .SA
+        q2 = yf_svc.get_quote(t + ".SA")
+        if not q2.get("error") and q2.get("change_pct") is not None:
+            out[t] = q2
+            continue
+        q3 = stooq.get_quote(t + ".SA")
+        if not q3.get("error") and q3.get("change_pct") is not None:
+            out[t] = q3
+            continue
+        out[t] = {"ticker": t, "price": None, "change_pct": None, "error": True}
+    return out
+
+
 with st.spinner("Carregando dados do Brasil..."):
     ibov      = data.quote("^BVSP", br=True)
     ibov_hist = data.history("^BVSP", period="1y")
     ipca_hist = bcb.get_ipca_history(n=24)
-    quotes    = brapi.get_quotes(TICKERS)
+    quotes    = _get_br_quotes_cascade(TICKERS)
 
 
 # ── Ibovespa hero ─────────────────────────────────────────────────────────────
@@ -132,6 +160,12 @@ if valid:
     with col_down:
         fig = bar_movers(top5_down, "ticker", "change_pct", "▼ Maiores Baixas", 240)
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+else:
+    st.warning(
+        "Top Movers temporariamente indisponível — todas as fontes "
+        "(brapi · yfinance · stooq) falharam para os tickers acompanhados. "
+        "Tente atualizar em instantes."
+    )
 
 st.markdown("---")
 
