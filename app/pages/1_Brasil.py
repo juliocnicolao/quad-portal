@@ -144,22 +144,38 @@ st.markdown("---")
 section_header("Top Movers", "Maiores altas e baixas do dia")
 
 valid = [
-    {"ticker": t, **q}
+    {**q, "ticker": t}   # força ticker "limpo" (PETR4, sem ".SA")
     for t, q in quotes.items()
     if not q.get("error") and q.get("change_pct") is not None
 ]
 
 if valid:
     df_movers = pd.DataFrame(valid).sort_values("change_pct", ascending=False)
-    top5_up   = df_movers.head(5)
-    top5_down = df_movers.tail(5).sort_values("change_pct")
+    # Altas: somente positivos ; Baixas: somente negativos
+    top5_up   = df_movers[df_movers["change_pct"] > 0].head(5)
+    top5_down = df_movers[df_movers["change_pct"] < 0].sort_values("change_pct").head(5)
+
+    # Escala simétrica comum — facilita comparação visual
+    max_abs = float(df_movers["change_pct"].abs().max())
+    pad     = max(max_abs * 0.15, 0.5)   # 15% de respiro ou 0.5pp mínimo
+    x_up    = [0, max_abs + pad]
+    x_down  = [-(max_abs + pad), 0]
+
     col_up, col_down = st.columns(2)
     with col_up:
-        fig = bar_movers(top5_up, "ticker", "change_pct", "▲ Maiores Altas", 240)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        if top5_up.empty:
+            st.info("Nenhum ativo em alta no momento.")
+        else:
+            fig = bar_movers(top5_up, "ticker", "change_pct", "▲ Maiores Altas", 240)
+            fig.update_xaxes(range=x_up)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     with col_down:
-        fig = bar_movers(top5_down, "ticker", "change_pct", "▼ Maiores Baixas", 240)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        if top5_down.empty:
+            st.info("Nenhum ativo em baixa no momento.")
+        else:
+            fig = bar_movers(top5_down, "ticker", "change_pct", "▼ Maiores Baixas", 240)
+            fig.update_xaxes(range=x_down)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 else:
     st.warning(
         "Top Movers temporariamente indisponível — todas as fontes "
