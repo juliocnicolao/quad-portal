@@ -110,15 +110,57 @@ def _fetch_imf(indicator: str, max_year: str = _MAX_YEAR) -> dict[str, float]:
 
 @st.cache_data(ttl=CACHE_TTL * 4, persist="disk")   # 1 hour — CPI releases monthly
 def _fetch_fred_cpi_yoy() -> float | None:
-    """US CPI YoY % — FRED CPIAUCSL (real monthly data, not IMF projection)."""
-    if _fred is None:
+    """US CPI YoY % — tenta fredapi; fallback via HTTP direto FRED (sem depender fredapi)."""
+    if _fred is not None:
+        try:
+            s = _fred.get_series("CPIAUCSL")
+            yoy = s.pct_change(12) * 100
+            val = float(yoy.dropna().iloc[-1])
+            if not math.isnan(val):
+                return round(val, 1)
+        except Exception as e:
+            _log.warning("fredapi CPI falhou: %s", e)
+
+    # Fallback: FRED HTTP API direto (precisa da key)
+    if not FRED_API_KEY:
         return None
     try:
-        s = _fred.get_series("CPIAUCSL")
-        yoy = s.pct_change(12) * 100
-        val = float(yoy.dropna().iloc[-1])
-        return None if math.isnan(val) else round(val, 1)
-    except Exception:
+        payload = get_json(
+            "https://api.stlouisfed.org/fred/series/observations",
+            params={"series_id": "CPIAUCSL", "api_key": FRED_API_KEY,
+                    "file_type": "json", "sort_order": "desc", "limit": 13},
+            timeout=10, retries=2,
+        )
+        if not payload:
+            return None
+        obs = [o for o in payload.get("observations", []) if o.get("value") not in (".", None)]
+        if len(obs) < 13:
+            return None
+        latest = float(obs[0]["value"])
+        year_ago = float(obs[12]["value"])
+        if year_ago <= 0:
+            return None
+        yoy = (latest / year_ago - 1) * 100
+        return round(yoy, 1)
+    except Exception as e:
+        _log.warning("FRED HTTP CPI falhou: %s", e)
+        return None
+
+
+@st.cache_data(ttl=CACHE_TTL * 4, persist="disk")
+def _fetch_bcb_gross_debt() -> float | None:
+    """Dívida Bruta Gov Geral BR % PIB — BCB série 13762 (DBGG)."""
+    try:
+        payload = get_json(
+            "https://api.bcb.gov.br/dados/serie/bcdata.sgs.13762"
+            "/dados/ultimos/1?formato=json", timeout=8, retries=2,
+        )
+        if not payload:
+            return None
+        val = float(str(payload[0]["valor"]).replace(",", "."))
+        return None if math.isnan(val) else val
+    except Exception as e:
+        _log.warning("BCB Dívida Bruta falhou: %s", e)
         return None
 
 
@@ -182,6 +224,7 @@ def get_all_fundamentals() -> pd.DataFrame:
     # Live inflation overrides (real-time, beat IMF projections)
     _us_cpi   = _fetch_fred_cpi_yoy()
     _br_ipca  = _fetch_bcb_ipca_12m()
+    _br_gross = _fetch_bcb_gross_debt()   # BCB DBGG atualizado
 
     rows = []
     for display, cfg in COUNTRIES.items():
@@ -192,9 +235,11 @@ def get_all_fundamentals() -> pd.DataFrame:
         if not gdp and code in GDP_WEO:
             gdp = {"value": GDP_WEO[code], "year": GDP_WEO_YEAR}
 
-        # Gross Debt: IMF API → WEO fallback
+        # Gross Debt: BCB live (Brasil) → IMF API → WEO fallback
         gross = gross_data.get(code)
-        if not gross and code in GROSS_DEBT_WEO:
+        if code == "BRA" and _br_gross is not None:
+            gross = {"value": _br_gross, "year": str(_CY)}
+        elif not gross and code in GROSS_DEBT_WEO:
             gross = {"value": GROSS_DEBT_WEO[code], "year": "2024"}
 
         net = NET_DEBT_WEO.get(code)

@@ -184,6 +184,36 @@ with st.spinner("Carregando dados..."):
                     "change_pct": (src.get("change_pct", 0) or 0) - ((fx_data["USD-BRL"].get("change_pct") or 0)),
                     "error":      False,
                 }
+    # Fallback yfinance para pares que falharam no AwesomeAPI
+    YF_FX_FALLBACK = {
+        "EUR-BRL": "EURBRL=X", "GBP-BRL": "GBPBRL=X",
+        "CHF-BRL": "CHFBRL=X", "JPY-BRL": "JPYBRL=X",
+        "CAD-BRL": "CADBRL=X", "AUD-BRL": "AUDBRL=X",
+        "CNY-BRL": "CNYBRL=X", "ARS-BRL": "ARSBRL=X",
+        "USD-PYG": "USDPYG=X", "USD-UYU": "USDUYU=X",
+    }
+    for pair, yf_tkr in YF_FX_FALLBACK.items():
+        d = fx_data.get(pair) or {}
+        if d.get("error") or not d.get("mid"):
+            q = data.quote(yf_tkr)
+            if q.get("price"):
+                fx_data[pair] = {
+                    "bid":        q["price"],
+                    "mid":        q["price"],
+                    "change_pct": q.get("change_pct"),
+                    "error":      False,
+                }
+    # Recomputar cross-rates se preenchemos agora por yfinance
+    if _usd_brl_mid:
+        for src_pair, dst_pair in [("USD-PYG", "BRL-PYG"), ("USD-UYU", "BRL-UYU")]:
+            src = fx_data.get(src_pair) or {}
+            if not src.get("error") and src.get("mid") and not (fx_data.get(dst_pair) or {}).get("mid"):
+                fx_data[dst_pair] = {
+                    "bid":        src["mid"] / _usd_brl_mid,
+                    "mid":        src["mid"] / _usd_brl_mid,
+                    "change_pct": (src.get("change_pct", 0) or 0) - ((fx_data["USD-BRL"].get("change_pct") or 0)),
+                    "error":      False,
+                }
     # BRL-ARS = 1 / ARS-BRL (inversão direta)
     _ars = fx_data.get("ARS-BRL") or {}
     if not _ars.get("error") and _ars.get("mid") and _ars["mid"] > 0:
