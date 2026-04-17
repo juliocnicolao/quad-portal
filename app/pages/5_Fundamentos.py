@@ -102,16 +102,17 @@ net_vals   = df["Dívida Líq./PIB"].tolist()
 rate_vals  = df["Taxa de Juros %"].tolist()
 
 # ── Highlight winners ─────────────────────────────────────────────────────────
-def _best(col, reverse=False):
+def _best(col, highest=False):
+    """highest=True → maior valor primeiro; False → menor valor primeiro."""
     sub = df[df[col].apply(_valid)]
     if sub.empty:
         return None
-    return sub.sort_values(col, ascending=reverse).iloc[0]
+    return sub.sort_values(col, ascending=not highest).iloc[0]
 
-row_gdp   = _best("PIB (USD)",       reverse=True)   # highest GDP
-row_infl  = _best("Inflação %",      reverse=False)  # lowest inflation
-row_debt  = _best("Dívida Líq./PIB", reverse=False)  # lowest net debt
-row_rate  = _best("Taxa de Juros %", reverse=False)  # lowest rate
+row_gdp   = _best("PIB (USD)",       highest=True)   # highest GDP
+row_infl  = _best("Inflação %",      highest=False)  # lowest inflation
+row_debt  = _best("Dívida Líq./PIB", highest=False)  # lowest net debt
+row_rate  = _best("Taxa de Juros %", highest=False)  # lowest rate
 
 def _hi_card(col, label, fmt_fn, sub_text, accent="#C8232B"):
     row = col

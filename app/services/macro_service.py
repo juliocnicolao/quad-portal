@@ -56,6 +56,29 @@ NET_DEBT_WEO = {
     "IND": 82.7,  "JPN": 155.3, "PRY": 30.0, "ARG": 45.5,
 }
 
+# IMF WEO Oct/2024 — GDP nominal (USD billions, actual 2024).
+# Fallback quando API IMF DataMapper falha. Atualizar anualmente.
+GDP_WEO = {
+    "USA": 29167.8, "BRA":  2188.4, "GBR": 3587.5,
+    "DEU":  4710.0, "ITA":  2376.5, "AUS": 1802.1,
+    "IND":  3889.1, "JPN":  4070.1, "PRY":   45.7, "ARG": 633.2,
+}
+GDP_WEO_YEAR = "2024"
+
+# IMF WEO Oct/2024 — Gross Debt (% of GDP, 2024 estimate).
+GROSS_DEBT_WEO = {
+    "USA": 121.0, "BRA":  87.6, "GBR": 101.8,
+    "DEU":  62.7, "ITA": 136.9, "AUS":  49.3,
+    "IND":  83.0, "JPN": 251.2, "PRY":  40.8, "ARG": 90.9,
+}
+
+# IMF WEO Oct/2024 — Inflation % (annual change, 2025 projection).
+INFL_WEO = {
+    "USA": 2.0, "BRA": 4.0, "GBR": 2.1,
+    "DEU": 2.1, "ITA": 1.8, "AUS": 2.8,
+    "IND": 4.4, "JPN": 2.0, "PRY": 3.8, "ARG": 62.7,
+}
+
 _IMF_CODES = ",".join(c["imf"] for c in COUNTRIES.values())
 
 
@@ -164,11 +187,19 @@ def get_all_fundamentals() -> pd.DataFrame:
     for display, cfg in COUNTRIES.items():
         code = cfg["imf"]
 
-        gdp   = gdp_data.get(code)
-        gross = gross_data.get(code)
-        net   = NET_DEBT_WEO.get(code)
+        # GDP: IMF API → WEO fallback
+        gdp = gdp_data.get(code)
+        if not gdp and code in GDP_WEO:
+            gdp = {"value": GDP_WEO[code], "year": GDP_WEO_YEAR}
 
-        # Inflation priority: override → real-time API → IMF projection
+        # Gross Debt: IMF API → WEO fallback
+        gross = gross_data.get(code)
+        if not gross and code in GROSS_DEBT_WEO:
+            gross = {"value": GROSS_DEBT_WEO[code], "year": "2024"}
+
+        net = NET_DEBT_WEO.get(code)
+
+        # Inflation priority: override → real-time API → IMF API → WEO fallback
         if "infl_override" in cfg:
             infl_val = cfg["infl_override"]
         else:
@@ -179,7 +210,7 @@ def get_all_fundamentals() -> pd.DataFrame:
                 infl_val = _br_ipca
             else:
                 raw = infl_data.get(code)
-                infl_val = raw["value"] if raw else None
+                infl_val = raw["value"] if raw else INFL_WEO.get(code)
 
         # Interest rate — live fetch with fallback to known manual value
         if "fred_rate" in cfg:

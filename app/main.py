@@ -169,9 +169,30 @@ with st.spinner("Carregando dados..."):
     ipca  = bcb.get_ipca_12m()
     fx_data = fx_svc.get_fx([
         "USD-BRL", "EUR-BRL", "GBP-BRL", "CHF-BRL", "JPY-BRL",
-        "CAD-BRL", "AUD-BRL", "CNY-BRL",
-        "ARS-BRL", "BRL-ARS", "BRL-PYG", "BRL-UYU",
+        "CAD-BRL", "AUD-BRL", "CNY-BRL", "ARS-BRL",
+        "USD-PYG", "USD-UYU",
     ])
+    # Cross-rates BRL → vizinhos (AwesomeAPI não tem BRL-PYG/UYU direto)
+    _usd_brl_mid = (fx_data.get("USD-BRL") or {}).get("mid")
+    if _usd_brl_mid:
+        for src_pair, dst_pair in [("USD-PYG", "BRL-PYG"), ("USD-UYU", "BRL-UYU")]:
+            src = fx_data.get(src_pair) or {}
+            if not src.get("error") and src.get("mid"):
+                fx_data[dst_pair] = {
+                    "bid":        src["mid"] / _usd_brl_mid,
+                    "mid":        src["mid"] / _usd_brl_mid,
+                    "change_pct": (src.get("change_pct", 0) or 0) - ((fx_data["USD-BRL"].get("change_pct") or 0)),
+                    "error":      False,
+                }
+    # BRL-ARS = 1 / ARS-BRL (inversão direta)
+    _ars = fx_data.get("ARS-BRL") or {}
+    if not _ars.get("error") and _ars.get("mid") and _ars["mid"] > 0:
+        fx_data["BRL-ARS"] = {
+            "bid":        1 / _ars["mid"],
+            "mid":        1 / _ars["mid"],
+            "change_pct": -(_ars.get("change_pct") or 0),
+            "error":      False,
+        }
     # Fallback FX: se USD-BRL falhar, busca via yfinance/stooq
     if fx_data.get("USD-BRL", {}).get("error"):
         dolar_yf = data.quote("USDBRL=X")
