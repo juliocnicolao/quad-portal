@@ -405,6 +405,19 @@ try:
     from services                import news_service as news_svc
     from components.news_ticker  import render_news_ticker
     section_header("Live News", "Manchetes de economia e mercados — agregador BR + Global")
+
+    # Auto-refresh (5 min) se toggle ligado na sidebar
+    _news_auto = bool(st.session_state.get("news_autorefresh_home", True))
+    if _news_auto:
+        try:
+            from streamlit_autorefresh import st_autorefresh
+            _cnt = st_autorefresh(interval=300_000, key="news_home_autorefresh")
+            if _cnt > 0:
+                news_svc.get_news.clear()
+                news_svc._fetch_feed.clear()
+        except ImportError:
+            pass
+
     n_left, n_right = st.columns(2)
     with st.spinner("Buscando notícias..."):
         br_news    = news_svc.get_news(region="BR",    limit=12)
@@ -415,10 +428,14 @@ try:
         render_news_ticker(br_news,    title="🇧🇷 BRASIL LIVE",  show_count=True)
     with n_right:
         render_news_ticker(world_news, title="🌎 GLOBAL LIVE",  show_count=True)
-    st.markdown('<div style="text-align:right;margin-top:0.4rem;font-size:0.72rem;">'
-                '<a href="/Noticias" target="_self" style="color:#888;text-decoration:none;">'
-                'Ver todas as notícias →</a></div>',
-                unsafe_allow_html=True)
+    st.markdown(
+        '<div style="display:flex;justify-content:space-between;align-items:center;'
+        'margin-top:0.4rem;font-size:0.72rem;">'
+        f'<span style="color:#555;">⟳ {"Auto-refresh 5min ligado" if _news_auto else "Auto-refresh desligado"}</span>'
+        '<a href="/Noticias" target="_self" style="color:#888;text-decoration:none;">'
+        'Ver todas as notícias →</a></div>',
+        unsafe_allow_html=True,
+    )
 except Exception as _news_err:
     st.caption(f"Notícias temporariamente indisponíveis: {_news_err}")
 

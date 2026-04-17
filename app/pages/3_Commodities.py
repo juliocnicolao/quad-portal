@@ -18,6 +18,11 @@ TRIED = ["yfinance", "stooq"]
 
 _fx       = fx_svc.get_fx(["USD-BRL"]).get("USD-BRL", {})
 _usd_brl  = _fx.get("mid") or _fx.get("bid")
+# Fallback yfinance se AwesomeAPI falhou
+if not _usd_brl:
+    _yf_usdbrl = data.quote("USDBRL=X")
+    if _yf_usdbrl.get("price"):
+        _usd_brl = _yf_usdbrl["price"]
 _show_brl = bool(st.session_state.get("show_brl_equiv")) and _usd_brl
 
 def _brl_equiv(usd_value):

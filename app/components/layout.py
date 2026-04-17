@@ -104,6 +104,11 @@ def render_sidebar():
             value=st.session_state.get("show_brl_equiv", False),
             help="Adiciona o valor convertido em reais abaixo de preços em USD.",
         )
+        st.session_state["news_autorefresh_home"] = st.toggle(
+            "Auto-refresh notícias (5min)",
+            value=st.session_state.get("news_autorefresh_home", True),
+            help="Atualiza o widget de notícias da Visão Geral a cada 5 minutos.",
+        )
         st.caption("Dados com atraso de até 15 min.")
 
 

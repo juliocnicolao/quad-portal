@@ -15,18 +15,41 @@ render_sidebar()
 page_header("Notícias — Live Feed",
             "Agregador em tempo real · Valor, InfoMoney, G1, BBC, CNBC, Reuters e mais")
 
+# ── Auto-refresh ─────────────────────────────────────────────────────────────
+try:
+    from streamlit_autorefresh import st_autorefresh
+    _HAS_AUTOREFRESH = True
+except ImportError:
+    _HAS_AUTOREFRESH = False
+
 # ── Controles ────────────────────────────────────────────────────────────────
-ctrl_c1, ctrl_c2, ctrl_c3 = st.columns([2, 2, 3])
+ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4 = st.columns([2, 2, 2, 2])
 with ctrl_c1:
     region = st.radio("Região:", ["Todas", "🇧🇷 Brasil", "🌎 Global"],
                       horizontal=True, label_visibility="collapsed")
 with ctrl_c2:
     limit = st.select_slider("Qtd. itens:", options=[20, 40, 60, 100], value=40)
 with ctrl_c3:
+    auto = st.selectbox("Auto-refresh:",
+                        ["Desligado", "1 min", "2 min", "5 min", "10 min"],
+                        index=3)
+with ctrl_c4:
     if st.button("🔄 Atualizar agora"):
         news.get_news.clear()
         news._fetch_feed.clear()
         st.rerun()
+
+# Dispara rerun automatico conforme intervalo escolhido
+if _HAS_AUTOREFRESH and auto != "Desligado":
+    _intervals = {"1 min": 60_000, "2 min": 120_000,
+                  "5 min": 300_000, "10 min": 600_000}
+    _refresh_ms = _intervals[auto]
+    _count = st_autorefresh(interval=_refresh_ms, key="news_autorefresh")
+    # Invalida cache de 5min a cada ciclo (forca fetch novo)
+    if _count > 0:
+        news.get_news.clear()
+        news._fetch_feed.clear()
+    st.caption(f"⟳ Atualizando a cada {auto}. Último ciclo: #{_count}")
 
 region_key = {"Todas": "ALL", "🇧🇷 Brasil": "BR", "🌎 Global": "WORLD"}[region]
 
