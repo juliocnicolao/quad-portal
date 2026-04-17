@@ -400,6 +400,29 @@ with macro_col:
                 "Preço à vista do ouro em dólares por onça troy")
 
 
+# ── Row 4: Notícias ───────────────────────────────────────────────────────────
+try:
+    from services                import news_service as news_svc
+    from components.news_ticker  import render_news_ticker
+    section_header("Live News", "Manchetes de economia e mercados — agregador BR + Global")
+    n_left, n_right = st.columns(2)
+    with st.spinner("Buscando notícias..."):
+        br_news    = news_svc.get_news(region="BR",    limit=12)
+        world_news = news_svc.get_news(region="WORLD", limit=12)
+        br_news    = news_svc.refresh_age_strings(br_news)
+        world_news = news_svc.refresh_age_strings(world_news)
+    with n_left:
+        render_news_ticker(br_news,    title="🇧🇷 BRASIL LIVE",  show_count=True)
+    with n_right:
+        render_news_ticker(world_news, title="🌎 GLOBAL LIVE",  show_count=True)
+    st.markdown('<div style="text-align:right;margin-top:0.4rem;font-size:0.72rem;">'
+                '<a href="/Noticias" target="_self" style="color:#888;text-decoration:none;">'
+                'Ver todas as notícias →</a></div>',
+                unsafe_allow_html=True)
+except Exception as _news_err:
+    st.caption(f"Notícias temporariamente indisponíveis: {_news_err}")
+
+
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="portal-footer">
