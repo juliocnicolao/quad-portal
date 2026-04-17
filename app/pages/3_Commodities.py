@@ -98,19 +98,72 @@ st.markdown("---")
 
 
 # ══ METAIS ════════════════════════════════════════════════════════════════════
-section_header("Metais Preciosos & Industriais", "Ouro, Prata, Cobre e Minério de Ferro")
-c1, c2, c3, c4 = st.columns(4)
-_card(c1, "Ouro",             "GC=F")
-_card(c2, "Prata",            "SI=F")
-_card(c3, "Cobre",            "HG=F")
-_card(c4, "Minério de Ferro", "TIO=F")
+section_header("Metais Preciosos & Industriais",
+               "Ouro (USD/oz e R$/g), Prata, Cobre e Minério de Ferro")
+c1, c2, c3, c4, c5 = st.columns(5)
+_card(c1, "Ouro (USD/oz)",    "GC=F")
+
+# ── Ouro em R$/grama (conversão: USD/oz × USD-BRL ÷ 31.1035 g/oz) ────────────
+_OZ_TO_G  = 31.1034768   # troy ounce → gramas
+_ouro_q   = quotes.get("GC=F", {})
+_ouro_usd = _ouro_q.get("price")
+_ouro_pct = _ouro_q.get("change_pct")
+_ouro_brl_g = (_ouro_usd * _usd_brl / _OZ_TO_G) if (_ouro_usd and _usd_brl) else None
+
+with c2:
+    if _ouro_brl_g is None:
+        error_card("Ouro (R$/g)", tried=TRIED + ["usd-brl"])
+    else:
+        metric_card(
+            "Ouro (R$/g)",
+            fmt_currency_brl(_ouro_brl_g),
+            _ouro_pct,                     # var. dia do ouro em USD (bom proxy)
+            hint="BRL/grama",
+            tooltip="Ouro convertido: (USD/oz × USD-BRL) ÷ 31,1035 g/oz. "
+                    "Var. dia reflete o ouro em dólar (não inclui variação do câmbio no dia).",
+        )
+
+_card(c3, "Prata",            "SI=F")
+_card(c4, "Cobre",            "HG=F")
+_card(c5, "Minério de Ferro", "TIO=F")
 
 st.markdown("<br>", unsafe_allow_html=True)
-ch1, ch2, ch3, ch4 = st.columns(4)
-with ch1: _chart(hists["GC=F"],  "Ouro",             "GC=F",  height=200)
-with ch2: _chart(hists["SI=F"],  "Prata",            "SI=F",  height=200)
-with ch3: _chart(hists["HG=F"],  "Cobre",            "HG=F",  height=200)
-with ch4: _chart(hists["TIO=F"], "Minério de Ferro", "TIO=F", height=200)
+ch1, ch2, ch3, ch4, ch5 = st.columns(5)
+with ch1: _chart(hists["GC=F"],  "Ouro (USD/oz)",    "GC=F",  height=200)
+
+# Gráfico Ouro R$/g: usa histórico de GC=F e aplica câmbio spot atual (aproximação)
+# — fiel ao dia a dia porque só multiplicamos pela USDBRL corrente do histórico
+with ch2:
+    _dfg = hists.get("GC=F")
+    if _dfg is None or _dfg.empty or "Close" not in _dfg.columns or not _usd_brl:
+        st.caption("Histórico em R$/g indisponível.")
+    else:
+        import pandas as pd
+        _usdbrl_hist = data.history("USDBRL=X", period="6mo")
+        d = _dfg.reset_index()
+        date_col = "Date" if "Date" in d.columns else d.columns[0]
+        d = d[[date_col, "Close"]].rename(columns={"Close": "gold_usd"})
+        if not _usdbrl_hist.empty and "Close" in _usdbrl_hist.columns:
+            fx_df = _usdbrl_hist.reset_index()
+            fx_col = "Date" if "Date" in fx_df.columns else fx_df.columns[0]
+            fx_df = fx_df[[fx_col, "Close"]].rename(columns={fx_col: date_col, "Close": "usdbrl"})
+            d = pd.merge_asof(
+                d.sort_values(date_col), fx_df.sort_values(date_col),
+                on=date_col, direction="backward",
+            )
+            d["Close"] = d["gold_usd"] * d["usdbrl"] / _OZ_TO_G
+        else:
+            # fallback: câmbio atual constante
+            d["Close"] = d["gold_usd"] * _usd_brl / _OZ_TO_G
+        d = d.dropna(subset=["Close"])
+        fig = line_chart(d, x_col=date_col, y_col="Close",
+                         title="Ouro (R$/g) — 6m", y_label="R$/g",
+                         color="#D4AF37", fill=True, height=200)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+with ch3: _chart(hists["SI=F"],  "Prata",            "SI=F",  height=200)
+with ch4: _chart(hists["HG=F"],  "Cobre",            "HG=F",  height=200)
+with ch5: _chart(hists["TIO=F"], "Minério de Ferro", "TIO=F", height=200)
 
 st.markdown("---")
 
