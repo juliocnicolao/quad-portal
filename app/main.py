@@ -139,7 +139,14 @@ with st.sidebar:
     st.page_link("pages/3_Commodities.py",    label="Commodities",  icon="📦")
     st.page_link("pages/4_Cripto.py",         label="Cripto",       icon="🪙")
     st.page_link("pages/5_Fundamentos.py",    label="Fundamentos",  icon="🌍")
+    st.page_link("pages/6_Watchlist.py",      label="Watchlist",    icon="⭐")
     st.markdown("---")
+    st.markdown("**Preferências**")
+    st.session_state["show_brl_equiv"] = st.toggle(
+        "Mostrar equivalente em BRL",
+        value=st.session_state.get("show_brl_equiv", False),
+        help="Adiciona o valor convertido em reais abaixo de preços em USD.",
+    )
     st.caption("Dados com atraso de até 15 min.")
 
 

@@ -184,6 +184,74 @@ st.dataframe(df_liq[["Ativo","Preço","Var. Dia","Vol. Médio 3m"]],
              use_container_width=True, hide_index=True)
 
 
+# ── Renda Fixa BR ────────────────────────────────────────────────────────────
+st.markdown("---")
+from services import renda_fixa_service as rf
+
+section_header("Renda Fixa", "Tesouro Direto e curva DI (proxy via futuros)")
+
+col_td, col_di = st.columns([3, 2])
+
+with col_td:
+    with st.spinner("Carregando Tesouro Direto..."):
+        td = rf.get_tesouro_direto()
+    if td.empty:
+        st.warning("Tesouro Direto indisponível no momento.")
+    else:
+        st.caption(f"Atualizado em {td['Data Base'].max().strftime('%d/%m/%Y')} · "
+                   f"Fonte: Tesouro Transparente")
+        # colunas úteis
+        show = td[[
+            "Tipo Titulo", "Data Vencimento",
+            "Taxa Compra Manha", "Taxa Venda Manha",
+            "PU Compra Manha", "PU Venda Manha",
+        ]].copy()
+        show["Data Vencimento"] = show["Data Vencimento"].dt.strftime("%d/%m/%Y")
+        show.rename(columns={
+            "Tipo Titulo": "Título",
+            "Taxa Compra Manha": "Taxa Compra %",
+            "Taxa Venda Manha":  "Taxa Venda %",
+            "PU Compra Manha":   "PU Compra",
+            "PU Venda Manha":    "PU Venda",
+        }, inplace=True)
+        for c in ["Taxa Compra %", "Taxa Venda %"]:
+            show[c] = show[c].map(lambda v: f"{v:.2f}%" if pd.notna(v) else "—")
+        for c in ["PU Compra", "PU Venda"]:
+            show[c] = show[c].map(lambda v: f"R$ {v:,.2f}".replace(",","X").replace(".",",").replace("X",".") if pd.notna(v) else "—")
+        st.dataframe(show, use_container_width=True, hide_index=True, height=360)
+
+with col_di:
+    with st.spinner("Calculando curva DI..."):
+        di = rf.get_di_curve()
+    if di.empty:
+        st.warning("Curva DI indisponível.")
+    else:
+        import plotly.graph_objects as go
+        fig = go.Figure(go.Scatter(
+            x=di["vencimento"], y=di["taxa"],
+            mode="lines+markers",
+            line=dict(color="#C8232B", width=2),
+            marker=dict(size=10, color="#C8232B"),
+            text=[f"{t:.2f}%" for t in di["taxa"]],
+            textposition="top center",
+            hovertemplate="%{x}<br><b>%{y:.2f}%</b><extra>DI</extra>",
+        ))
+        fig.update_layout(
+            paper_bgcolor="#0D0D0D", plot_bgcolor="#1A1A1A",
+            font=dict(color="#F0F0F0", size=11),
+            margin=dict(l=10, r=10, t=35, b=10),
+            xaxis=dict(gridcolor="#2a2a2a"),
+            yaxis=dict(gridcolor="#2a2a2a", ticksuffix="%"),
+            height=340,
+            title=dict(text="Curva DI — projeção implícita (% a.a.)",
+                       font=dict(size=13, color="#888")),
+        )
+        st.plotly_chart(fig, use_container_width=True,
+                        config={"displayModeBar": False})
+        st.caption("Proxy via DI1 futures (Yahoo/Stooq). "
+                   "Aproximação visual — não use para precificação.")
+
+
 # ── Detalhe por ticker ────────────────────────────────────────────────────────
 BR_DETAIL = {t: t + ".SA" for t in TICKERS}
 BR_DETAIL["Ibovespa"] = "^BVSP"
