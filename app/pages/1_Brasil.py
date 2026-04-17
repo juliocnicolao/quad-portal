@@ -11,6 +11,7 @@ from components.charts      import line_chart, bar_movers
 from components.detail_panel import render_detail
 from services               import brapi_service as brapi
 from services               import yfinance_service as yf_svc
+from services               import stooq_service    as stooq
 from services               import bcb_service as bcb
 from utils                  import fmt_points, fmt_pct
 import plotly.graph_objects as go
@@ -28,10 +29,17 @@ TICKERS = [
 ]
 
 with st.spinner("Carregando dados do Brasil..."):
+    # Cascata: brapi → yfinance → stooq
     ibov = brapi.get_quote("^BVSP")
     if ibov.get("error") or ibov.get("price") is None:
-        ibov = yf_svc.get_quote("^BVSP")   # fallback yfinance
+        ibov = yf_svc.get_quote("^BVSP")
+    if ibov.get("error") or ibov.get("price") is None:
+        ibov = stooq.get_quote("^BVSP")
+
     ibov_hist = yf_svc.get_history("^BVSP", period="1y")
+    if ibov_hist.empty:
+        ibov_hist = stooq.get_history("^BVSP", period="1y")
+
     ipca_hist = bcb.get_ipca_history(n=24)
     quotes    = brapi.get_quotes(TICKERS)
 

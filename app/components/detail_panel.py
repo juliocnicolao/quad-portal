@@ -7,7 +7,46 @@ user triggers by expanding / changing selection).
 import streamlit as st
 from components.charts import candlestick_chart, line_chart
 from services import yfinance_service as yf_svc
+from services import stooq_service as stooq
 from utils import fmt_currency_usd, fmt_currency_brl, fmt_pct
+
+
+def _detail_with_fallback(ticker: str) -> dict:
+    """Try yfinance first, fall back to Stooq-derived detail."""
+    d = yf_svc.get_detail(ticker)
+    if not d.get("error") and d.get("price"):
+        return d
+    # Stooq fallback: build detail from 1y history
+    hist = stooq.get_history(ticker, period="1y")
+    if hist.empty or "Close" not in hist.columns:
+        return {"error": True, "msg": "no data"}
+    closes = hist["Close"].dropna()
+    if closes.empty:
+        return {"error": True, "msg": "no closes"}
+    price = float(closes.iloc[-1])
+    prev = float(closes.iloc[-2]) if len(closes) >= 2 else price
+    change_pct = ((price - prev) / prev * 100) if prev else 0.0
+    highs = hist["High"].dropna() if "High" in hist.columns else closes
+    lows = hist["Low"].dropna() if "Low" in hist.columns else closes
+    vols = hist["Volume"].dropna() if "Volume" in hist.columns else None
+    return {
+        "name": ticker,
+        "price": price,
+        "change_pct": change_pct,
+        "high_52w": float(highs.max()),
+        "low_52w": float(lows.min()),
+        "volume": float(vols.tail(60).mean()) if vols is not None and len(vols) else 0,
+        "market_cap": None,
+        "currency": "USD",
+        "error": False,
+    }
+
+
+def _history_with_fallback(ticker: str, period: str):
+    df = yf_svc.get_history(ticker, period=period)
+    if df.empty:
+        df = stooq.get_history(ticker, period=period)
+    return df
 
 
 def render_detail(
@@ -38,8 +77,8 @@ def render_detail(
         ticker = label_map[selected_label]
 
         with st.spinner(f"Carregando {selected_label}..."):
-            detail = yf_svc.get_detail(ticker)
-            hist   = yf_svc.get_history(ticker, period=period)
+            detail = _detail_with_fallback(ticker)
+            hist   = _history_with_fallback(ticker, period=period)
 
         if detail.get("error") or hist.empty:
             st.warning("Dados indisponíveis para este ativo no momento.")

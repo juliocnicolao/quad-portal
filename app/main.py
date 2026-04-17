@@ -84,6 +84,7 @@ from services          import yfinance_service as yf_svc
 from services          import brapi_service    as brapi
 from services          import awesome_service  as fx_svc
 from services          import bcb_service      as bcb
+from services          import stooq_service    as stooq
 from utils             import fmt_currency_brl, fmt_currency_usd, fmt_points, fmt_pct
 
 
@@ -114,21 +115,46 @@ st.markdown('<div class="page-subtitle">Panorama dos principais mercados — atu
             unsafe_allow_html=True)
 
 
+# ── Helper: cascata de fontes com fallback ───────────────────────────────────
+def _quote_with_fallback(primary_ticker: str, *fallback_tickers):
+    """Try yfinance first, then Stooq. Returns first valid quote."""
+    q = yf_svc.get_quote(primary_ticker)
+    if not q.get("error") and q.get("price"):
+        return q
+    q = stooq.get_quote(primary_ticker)
+    if not q.get("error") and q.get("price"):
+        return q
+    for t in fallback_tickers:
+        q = yf_svc.get_quote(t)
+        if not q.get("error") and q.get("price"):
+            return q
+    return {"ticker": primary_ticker, "price": None, "error": True}
+
+
+def _history_with_fallback(ticker: str, period: str = "6mo"):
+    df = yf_svc.get_history(ticker, period=period)
+    if df.empty:
+        df = stooq.get_history(ticker, period=period)
+    return df
+
+
 # ── Data fetch (all cached) ───────────────────────────────────────────────────
 with st.spinner("Carregando dados..."):
+    # Ibovespa: brapi → yfinance → stooq
     ibov = brapi.get_quote("^BVSP")
     if ibov.get("error") or ibov.get("price") is None:
-        ibov = yf_svc.get_quote("^BVSP")
-    sp500     = yf_svc.get_quote("^GSPC")
-    btc       = yf_svc.get_quote("BTC-USD")
-    wti       = yf_svc.get_quote("CL=F")
-    ouro      = yf_svc.get_quote("GC=F")
+        ibov = _quote_with_fallback("^BVSP")
+
+    sp500     = _quote_with_fallback("^GSPC")
+    btc       = _quote_with_fallback("BTC-USD")
+    wti       = _quote_with_fallback("CL=F")
+    ouro      = _quote_with_fallback("GC=F")
     selic     = bcb.get_selic()
     ipca      = bcb.get_ipca_12m()
     fx_data   = fx_svc.get_fx(["USD-BRL", "EUR-BRL", "GBP-BRL", "ARS-BRL", "CHF-BRL", "JPY-BRL"])
-    # Fallback: se USD-BRL falhar, busca via yfinance
+    # Fallback: se USD-BRL falhar, busca via yfinance/stooq
     if fx_data.get("USD-BRL", {}).get("error"):
-        dolar_yf = yf_svc.get_quote("USDBRL=X")
+        dolar_yf = _quote_with_fallback("USDBRL=X")
         if dolar_yf.get("price"):
             fx_data["USD-BRL"] = {
                 "bid": dolar_yf["price"],
@@ -136,8 +162,8 @@ with st.spinner("Carregando dados..."):
                 "change_pct": dolar_yf.get("change_pct"),
                 "error": False
             }
-    ibov_hist = yf_svc.get_history("^BVSP",  period="6mo")
-    dolar_hist = yf_svc.get_history("USDBRL=X", period="6mo")
+    ibov_hist  = _history_with_fallback("^BVSP",    period="6mo")
+    dolar_hist = _history_with_fallback("USDBRL=X", period="6mo")
 
 
 # ── Row 1: Hero cards ─────────────────────────────────────────────────────────

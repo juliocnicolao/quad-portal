@@ -15,12 +15,21 @@ def _flatten(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(ttl=CACHE_TTL)
 def get_quote(ticker: str) -> dict:
-    """Returns latest price, previous close, and % change for a single ticker."""
+    """Returns latest price, previous close, and % change for a single ticker.
+    Uses history() instead of fast_info for better reliability on cloud hosts."""
     try:
-        t = yf.Ticker(ticker)
-        info = t.fast_info
-        price = info.last_price
-        prev  = info.previous_close
+        # history() é mais estável no Streamlit Cloud que fast_info
+        df = yf.download(ticker, period="5d", interval="1d",
+                         progress=False, auto_adjust=False, threads=False)
+        df = _flatten(df)
+        if df.empty or "Close" not in df.columns:
+            return {"ticker": ticker, "price": None, "prev_close": None,
+                    "change_pct": None, "error": True, "msg": "empty"}
+        closes = df["Close"].dropna()
+        if closes.empty:
+            return {"ticker": ticker, "price": None, "error": True, "msg": "no closes"}
+        price = float(closes.iloc[-1])
+        prev  = float(closes.iloc[-2]) if len(closes) >= 2 else price
         change_pct = ((price - prev) / prev * 100) if prev else 0.0
         return {
             "ticker":     ticker,
@@ -58,21 +67,45 @@ def get_history(ticker: str, period: str = "6mo", interval: str = "1d") -> pd.Da
 
 @st.cache_data(ttl=CACHE_TTL)
 def get_detail(ticker: str) -> dict:
-    """Richer info for the detail panel: 52w high/low, volume, name."""
+    """Richer info for the detail panel — uses 1y history for stability on cloud."""
     try:
-        t    = yf.Ticker(ticker)
-        info = t.info
-        fi   = t.fast_info
+        # Usar 1y history para calcular high/low 52w de forma confiável
+        df = yf.download(ticker, period="1y", interval="1d",
+                         progress=False, auto_adjust=False, threads=False)
+        df = _flatten(df)
+        if df.empty or "Close" not in df.columns:
+            return {"error": True, "msg": "no data"}
+        closes = df["Close"].dropna()
+        highs  = df["High"].dropna() if "High" in df.columns else closes
+        lows   = df["Low"].dropna()  if "Low"  in df.columns else closes
+        vols   = df["Volume"].dropna() if "Volume" in df.columns else pd.Series([0])
+
+        if closes.empty:
+            return {"error": True, "msg": "no closes"}
+
+        price = float(closes.iloc[-1])
+        prev  = float(closes.iloc[-2]) if len(closes) >= 2 else price
+        change_pct = ((price - prev) / prev * 100) if prev else 0.0
+
+        # Tentar buscar nome/moeda via info (pode falhar no cloud — tratado)
+        name, currency, market_cap = ticker, "USD", None
+        try:
+            info = yf.Ticker(ticker).info or {}
+            name = info.get("longName") or info.get("shortName", ticker)
+            currency = info.get("currency", "USD")
+            market_cap = info.get("marketCap")
+        except Exception:
+            pass
+
         return {
-            "name":        info.get("longName") or info.get("shortName", ticker),
-            "price":       fi.last_price,
-            "change_pct":  ((fi.last_price - fi.previous_close) / fi.previous_close * 100)
-                           if fi.previous_close else 0.0,
-            "high_52w":    fi.year_high,
-            "low_52w":     fi.year_low,
-            "volume":      fi.three_month_average_volume,
-            "market_cap":  info.get("marketCap"),
-            "currency":    info.get("currency", "USD"),
+            "name":        name,
+            "price":       price,
+            "change_pct":  change_pct,
+            "high_52w":    float(highs.max()),
+            "low_52w":     float(lows.min()),
+            "volume":      float(vols.tail(60).mean()) if len(vols) else 0,
+            "market_cap":  market_cap,
+            "currency":    currency,
             "error":       False,
         }
     except Exception as e:

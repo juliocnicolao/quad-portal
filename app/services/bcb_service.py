@@ -27,11 +27,45 @@ SGS_CODES = {
 def get_serie(code: int, n: int = 1) -> list[dict]:
     """Fetch last `n` observations from BCB SGS. Returns list of {data, valor}."""
     try:
-        r = requests.get(_SGS.format(code=code, n=n), timeout=10)
+        r = requests.get(
+            _SGS.format(code=code, n=n),
+            timeout=15,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+        )
         r.raise_for_status()
         return r.json()
     except Exception:
         return []
+
+
+@st.cache_data(ttl=CACHE_TTL)
+def get_ipca_history_sidra(n: int = 24) -> pd.DataFrame:
+    """Fallback: IBGE SIDRA API for IPCA mensal (tabela 1737, variavel 63)."""
+    try:
+        url = f"https://apisidra.ibge.gov.br/values/t/1737/n1/all/v/63/p/last%20{n}?formato=json"
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        r.raise_for_status()
+        data = r.json()
+        if not data or len(data) < 2:
+            return pd.DataFrame()
+        rows = []
+        for item in data[1:]:  # primeiro é header
+            period = item.get("D3C")  # AAAAMM
+            valor = item.get("V")
+            if not period or valor in (None, "...", "-"):
+                continue
+            try:
+                rows.append({
+                    "data": pd.to_datetime(period + "01", format="%Y%m%d"),
+                    "valor": float(valor),
+                })
+            except Exception:
+                continue
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(rows).sort_values("data").reset_index(drop=True)
+    except Exception:
+        return pd.DataFrame()
 
 
 @st.cache_data(ttl=CACHE_TTL)
@@ -70,16 +104,20 @@ def get_ipca_history(n: int = 24) -> pd.DataFrame:
     try:
         raw = get_serie(SGS_CODES["ipca_mensal"], n=n)
         if not raw:
-            return pd.DataFrame()
+            # BCB bloqueado/timeout → tenta SIDRA/IBGE
+            return get_ipca_history_sidra(n=n)
         df = pd.DataFrame(raw)
         df["data"] = pd.to_datetime(df["data"], format="%d/%m/%Y")
         # BCB may return valor as string ("0,56") or float (0.56) — handle both
         df["valor"] = pd.to_numeric(
             df["valor"].astype(str).str.replace(",", "."), errors="coerce"
         )
-        return df.dropna(subset=["valor"]).sort_values("data").reset_index(drop=True)
+        df = df.dropna(subset=["valor"]).sort_values("data").reset_index(drop=True)
+        if df.empty:
+            return get_ipca_history_sidra(n=n)
+        return df
     except Exception:
-        return pd.DataFrame()
+        return get_ipca_history_sidra(n=n)
 
 
 @st.cache_data(ttl=CACHE_TTL)
