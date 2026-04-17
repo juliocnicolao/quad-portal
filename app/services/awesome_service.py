@@ -11,13 +11,18 @@ _BASE = "https://economia.awesomeapi.com.br/last"
 
 # Pairs: {label: awesome_pair_code}
 FX_PAIRS = {
-    "Dólar (USD)":  "USD-BRL",
-    "Euro (EUR)":   "EUR-BRL",
-    "Libra (GBP)":  "GBP-BRL",
-    "Peso ARG":     "ARS-BRL",
-    "Franco SUI":   "CHF-BRL",
-    "Iene (JPY)":   "JPY-BRL",
-    "Yuan (CNY)":   "CNY-BRL",
+    "Dólar (USD)":   "USD-BRL",
+    "Euro (EUR)":    "EUR-BRL",
+    "Libra (GBP)":   "GBP-BRL",
+    "Franco SUI":    "CHF-BRL",
+    "Iene (JPY)":    "JPY-BRL",
+    "Dólar CAN":     "CAD-BRL",
+    "Dólar AUS":     "AUD-BRL",
+    "Yuan (CNY)":    "CNY-BRL",
+    "Peso ARG":      "ARS-BRL",
+    "BRL → ARS":     "BRL-ARS",
+    "BRL → PYG":     "BRL-PYG",
+    "BRL → UYU":     "BRL-UYU",
 }
 
 

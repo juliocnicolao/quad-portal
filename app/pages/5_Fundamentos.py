@@ -128,10 +128,22 @@ def _hi_card(col, label, fmt_fn, sub_text, accent="#C8232B"):
             f'<div class="hi-sub">{sub_text}</div>'
             f'</div>')
 
+def _pib_sub_text():
+    if row_gdp is None:
+        return "Maior economia"
+    try:
+        y = row_gdp["_pib_year"]
+        if y in (None, "—") or (isinstance(y, float) and math.isnan(y)):
+            return "Maior economia"
+        return f"Ano {y}"
+    except Exception:
+        return "Maior economia"
+_pib_year_sub = _pib_sub_text()
+
 col_a, col_b, col_c, col_d = st.columns(4)
 with col_a:
     st.markdown(_hi_card(row_gdp,  "Maior PIB",
-        lambda r: f"US$ {r['PIB (USD)']:,.0f} bi", f"Ano {row_gdp['_pib_year']}", "#4A90D9"), unsafe_allow_html=True)
+        lambda r: f"US$ {r['PIB (USD)']:,.0f} bi", _pib_year_sub, "#4A90D9"), unsafe_allow_html=True)
 with col_b:
     st.markdown(_hi_card(row_infl, "Menor Inflação",
         lambda r: f"{r['Inflação %']:.1f}%", "Melhor controle de preços", "#2ec27e"), unsafe_allow_html=True)
@@ -150,7 +162,10 @@ section_header("Tabela Comparativa", "Verde = melhor quartil · Vermelho = pior 
 rows_html = ""
 for i, (_, row) in enumerate(df.iterrows(), 1):
     gdp_bi  = row["PIB (USD)"]
-    gdp_str = f'<span class="gdp-val">US$ {gdp_bi:,.0f} bi</span><span class="gdp-year">({row["_pib_year"]})</span>' if _valid(gdp_bi) else '<span class="pill-na">—</span>'
+    _yr = row.get("_pib_year", "—") if hasattr(row, "get") else row["_pib_year"]
+    if isinstance(_yr, float) and math.isnan(_yr):
+        _yr = "—"
+    gdp_str = f'<span class="gdp-val">US$ {gdp_bi:,.0f} bi</span><span class="gdp-year">({_yr})</span>' if _valid(gdp_bi) else '<span class="pill-na">—</span>'
 
     flag_name = row["País"]
     parts = flag_name.split(" ", 1)

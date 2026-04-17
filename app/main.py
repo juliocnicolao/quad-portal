@@ -167,7 +167,11 @@ with st.spinner("Carregando dados..."):
     ouro  = data.quote("GC=F")
     selic = bcb.get_selic()
     ipca  = bcb.get_ipca_12m()
-    fx_data = fx_svc.get_fx(["USD-BRL", "EUR-BRL", "GBP-BRL", "ARS-BRL", "CHF-BRL", "JPY-BRL"])
+    fx_data = fx_svc.get_fx([
+        "USD-BRL", "EUR-BRL", "GBP-BRL", "CHF-BRL", "JPY-BRL",
+        "CAD-BRL", "AUD-BRL", "CNY-BRL",
+        "ARS-BRL", "BRL-ARS", "BRL-PYG", "BRL-UYU",
+    ])
     # Fallback FX: se USD-BRL falhar, busca via yfinance/stooq
     if fx_data.get("USD-BRL", {}).get("error"):
         dolar_yf = data.quote("USDBRL=X")
@@ -281,21 +285,28 @@ fx_col, macro_col = st.columns([3, 2])
 with fx_col:
     section_header("Câmbio", "Moedas × Real Brasileiro")
 
-    FX_LABELS = {
-        "USD-BRL": ("Dólar Americano", "🇺🇸"),
-        "EUR-BRL": ("Euro",            "🇪🇺"),
-        "GBP-BRL": ("Libra Esterlina", "🇬🇧"),
-        "ARS-BRL": ("Peso Argentino",  "🇦🇷"),
-        "CHF-BRL": ("Franco Suíço",    "🇨🇭"),
-        "JPY-BRL": ("Iene Japonês",    "🇯🇵"),
-    }
+    # (pair, label, flag, unit_prefix, decimals)
+    FX_LABELS = [
+        ("USD-BRL", "Dólar Americano",    "🇺🇸", "R$",  4),
+        ("EUR-BRL", "Euro",               "🇪🇺", "R$",  4),
+        ("GBP-BRL", "Libra Esterlina",    "🇬🇧", "R$",  4),
+        ("CHF-BRL", "Franco Suíço",       "🇨🇭", "R$",  4),
+        ("JPY-BRL", "Iene Japonês",       "🇯🇵", "R$",  4),
+        ("CAD-BRL", "Dólar Canadense",    "🇨🇦", "R$",  4),
+        ("AUD-BRL", "Dólar Australiano",  "🇦🇺", "R$",  4),
+        ("CNY-BRL", "Yuan Chinês",        "🇨🇳", "R$",  4),
+        ("ARS-BRL", "Peso Argentino",     "🇦🇷", "R$",  4),
+        ("BRL-ARS", "Real → Peso ARG",    "🇧🇷→🇦🇷", "$", 2),
+        ("BRL-PYG", "Real → Guarani PY",  "🇧🇷→🇵🇾", "₲", 2),
+        ("BRL-UYU", "Real → Peso URU",    "🇧🇷→🇺🇾", "$U", 2),
+    ]
 
     rows_html = ""
-    for pair, (name, flag) in FX_LABELS.items():
+    for pair, name, flag, unit, dec in FX_LABELS:
         d = fx_data.get(pair, {})
         if d.get("error") or not d.get("mid"):
             continue
-        mid   = f"R$ {d['mid']:.4f}"
+        mid   = f"{unit} {d['mid']:,.{dec}f}"
         pct   = d.get("change_pct", 0)
         arrow = "▲" if pct >= 0 else "▼"
         css   = "pos" if pct >= 0 else "neg"
