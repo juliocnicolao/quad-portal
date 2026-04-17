@@ -38,7 +38,7 @@ def get_serie(code: int, n: int = 1) -> list[dict]:
         return []
 
 
-@st.cache_data(ttl=CACHE_TTL)
+@st.cache_data(ttl=CACHE_TTL, persist="disk")
 def get_ipca_history_sidra(n: int = 24) -> pd.DataFrame:
     """Fallback: IBGE SIDRA API for IPCA mensal (tabela 1737, variavel 63)."""
     try:
@@ -98,7 +98,7 @@ def get_desemprego() -> dict:
     return {"value": val, "label": "Desemprego", "unit": "%"}
 
 
-@st.cache_data(ttl=CACHE_TTL)
+@st.cache_data(ttl=CACHE_TTL, persist="disk")
 def get_ipca_history(n: int = 24) -> pd.DataFrame:
     """Returns last `n` months of IPCA as DataFrame with columns [data, valor]."""
     try:

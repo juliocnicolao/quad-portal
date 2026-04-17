@@ -9,7 +9,10 @@ from components.layout import inject_css, render_sidebar, render_footer, page_he
 from components.cards  import section_header, metric_card, error_card
 from components.charts import line_chart, multi_line_chart  # multi_line_chart restaurado em charts.py
 from services          import yfinance_service as yf_svc
+from services          import data_service     as data
 from utils             import fmt_currency_usd, fmt_pct
+
+TRIED = ["yfinance", "stooq"]
 import requests
 import pandas as pd
 
@@ -36,19 +39,14 @@ def get_crypto_global():
     except Exception:
         return {}
 
-@st.cache_data(ttl=900)
-def _hist(ticker, period="1y"):
-    return yf_svc.get_history(ticker, period=period)
-
-
 with st.spinner("Carregando criptoativos..."):
-    btc       = yf_svc.get_quote("BTC-USD")
-    eth       = yf_svc.get_quote("ETH-USD")
-    bnb       = yf_svc.get_quote("BNB-USD")
-    sol       = yf_svc.get_quote("SOL-USD")
+    btc       = data.quote("BTC-USD")
+    eth       = data.quote("ETH-USD")
+    bnb       = data.quote("BNB-USD")
+    sol       = data.quote("SOL-USD")
     global_d  = get_crypto_global()
-    hist_btc  = _hist("BTC-USD")
-    hist_eth  = _hist("ETH-USD")
+    hist_btc  = data.history("BTC-USD", period="1y")
+    hist_eth  = data.history("ETH-USD", period="1y")
 
 
 # ── Hero cards ────────────────────────────────────────────────────────────────
@@ -58,7 +56,7 @@ c1, c2, c3, c4 = st.columns(4)
 def _card(col, label, q, hint="", tooltip=""):
     with col:
         if q.get("error") or q.get("price") is None:
-            error_card(label)
+            error_card(label, tried=TRIED)
         else:
             metric_card(label, fmt_currency_usd(q["price"]),
                         q.get("change_pct"), hint=hint, tooltip=tooltip)
@@ -151,11 +149,8 @@ periodo = st.radio("Período:", ["3 meses", "6 meses", "1 ano"],
 _p_map = {"3 meses": "3mo", "6 meses": "6mo", "1 ano": "1y"}
 _p = _p_map[periodo]
 
-@st.cache_data(ttl=900)
-def _h(t, p): return yf_svc.get_history(t, period=p)
-
-h_btc = _h("BTC-USD", _p)
-h_eth = _h("ETH-USD", _p)
+h_btc = data.history("BTC-USD", period=_p)
+h_eth = data.history("ETH-USD", period=_p)
 
 col_btc, col_eth = st.columns(2)
 

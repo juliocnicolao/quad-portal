@@ -47,7 +47,7 @@ NET_DEBT_WEO = {
 _IMF_CODES = ",".join(c["imf"] for c in COUNTRIES.values())
 
 
-@st.cache_data(ttl=CACHE_TTL * 8)   # 2 hours — annual data changes rarely
+@st.cache_data(ttl=CACHE_TTL * 8, persist="disk")   # 2 hours — annual data changes rarely
 def _fetch_imf(indicator: str, max_year: str = _MAX_YEAR) -> dict[str, float]:
     """Fetch latest available value from IMF DataMapper for all countries.
     max_year caps which year is selected — use _MAX_YEAR_GDP for actuals,
@@ -72,7 +72,7 @@ def _fetch_imf(indicator: str, max_year: str = _MAX_YEAR) -> dict[str, float]:
         return {}
 
 
-@st.cache_data(ttl=CACHE_TTL * 4)   # 1 hour — CPI releases monthly
+@st.cache_data(ttl=CACHE_TTL * 4, persist="disk")   # 1 hour — CPI releases monthly
 def _fetch_fred_cpi_yoy() -> float | None:
     """US CPI YoY % — FRED CPIAUCSL (real monthly data, not IMF projection)."""
     try:
@@ -84,7 +84,7 @@ def _fetch_fred_cpi_yoy() -> float | None:
         return None
 
 
-@st.cache_data(ttl=CACHE_TTL * 4)   # 1 hour — BCB releases monthly
+@st.cache_data(ttl=CACHE_TTL * 4, persist="disk")   # 1 hour — BCB releases monthly
 def _fetch_bcb_ipca_12m() -> float | None:
     """Brazil IPCA acumulado 12 meses — BCB série 13522."""
     try:
@@ -99,7 +99,7 @@ def _fetch_bcb_ipca_12m() -> float | None:
         return None
 
 
-@st.cache_data(ttl=CACHE_TTL * 4)   # 1 hour — rates change monthly at most
+@st.cache_data(ttl=CACHE_TTL * 4, persist="disk")   # 1 hour — rates change monthly at most
 def _fetch_fred_rate(series_id: str) -> float | None:
     try:
         s = _fred.get_series(series_id)
@@ -123,7 +123,7 @@ def _fetch_bcb_rate(code: int) -> float | None:
         return None
 
 
-@st.cache_data(ttl=CACHE_TTL * 4)
+@st.cache_data(ttl=CACHE_TTL * 4, persist="disk")
 def get_all_fundamentals() -> pd.DataFrame:
     """
     Returns a DataFrame with one row per country and columns:

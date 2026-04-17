@@ -47,13 +47,35 @@ def metric_card_row(items: list[dict], cols: int = 4):
             )
 
 
-def error_card(label: str, msg: str = "Dado indisponível"):
-    html = (f'<div style="{_CARD}opacity:0.4;">'
+def error_card(label: str, msg: str = "Dado indisponível",
+               tried: list[str] | None = None):
+    """Card padronizado para falha. `tried` lista as fontes testadas."""
+    footer = ""
+    if tried:
+        footer = (f'<div style="font-size:0.6rem;color:#444;margin-top:0.35rem;">'
+                  f'Fontes testadas: {" · ".join(tried)}</div>')
+    html = (f'<div style="{_CARD}opacity:0.55;border-color:#3a1f1f;">'
             f'<div style="{_LABEL}">{label}</div>'
-            f'<div style="font-size:1rem;color:#666;">—</div>'
+            f'<div style="font-size:1rem;color:#888;">⚠ indisponível</div>'
             f'<div style="{_HINT}">{msg}</div>'
+            f'{footer}'
             f'</div>')
     st.markdown(html, unsafe_allow_html=True)
+
+
+def freshness_badge(source: str | None, fetched_at: float | None = None) -> str:
+    """HTML pequeno mostrando a fonte e há quanto tempo o dado foi obtido."""
+    import time as _t
+    if not source or source == "none":
+        return ('<span style="font-size:0.6rem;color:#C8232B;'
+                'background:#2a1818;padding:2px 6px;border-radius:4px;">offline</span>')
+    age = ""
+    if fetched_at:
+        mins = max(0, int((_t.time() - fetched_at) / 60))
+        age  = f" · há {mins}min" if mins else " · agora"
+    return (f'<span style="font-size:0.6rem;color:#888;'
+            f'background:#1f1f1f;padding:2px 6px;border-radius:4px;">'
+            f'{source}{age}</span>')
 
 
 def section_header(title: str, subtitle: str | None = None):

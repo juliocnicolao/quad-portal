@@ -49,7 +49,7 @@ def get_quotes(tickers: list[str]) -> dict[str, dict]:
     return {t: get_quote(t) for t in tickers}
 
 
-@st.cache_data(ttl=CACHE_TTL)
+@st.cache_data(ttl=CACHE_TTL, persist="disk")
 def get_history(ticker: str, period: str = "6mo", interval: str = "1d") -> pd.DataFrame:
     """OHLCV history for charting. period: 1mo 3mo 6mo 1y 5y."""
     try:
@@ -65,7 +65,7 @@ def get_history(ticker: str, period: str = "6mo", interval: str = "1d") -> pd.Da
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=CACHE_TTL)
+@st.cache_data(ttl=CACHE_TTL, persist="disk")
 def get_detail(ticker: str) -> dict:
     """Richer info for the detail panel — uses 1y history for stability on cloud."""
     try:

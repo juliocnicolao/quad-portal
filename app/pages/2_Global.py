@@ -11,7 +11,10 @@ from components.charts       import yield_curve_chart, line_chart
 from components.detail_panel import render_detail
 from services                import yfinance_service as yf_svc
 from services                import fred_service     as fred
+from services                import data_service     as data
 from utils                   import fmt_currency_usd, fmt_points
+
+TRIED = ["yfinance", "stooq"]
 
 inject_css()
 render_sidebar()
@@ -31,7 +34,7 @@ EQUITIES = {
 }
 
 with st.spinner("Carregando mercados globais..."):
-    quotes    = yf_svc.get_quotes(list(EQUITIES.values()))
+    quotes    = data.quotes(list(EQUITIES.values()))
     tr_curve  = fred.get_treasury_curve()
     fed_funds = fred.get_fed_funds()
     us_unemp  = fred.get_us_unemployment()
@@ -51,7 +54,7 @@ def _card(col, label, ticker, hint="", tooltip=""):
         val = _fmt_value(ticker)
         q   = quotes.get(ticker, {})
         if val is None:
-            error_card(label)
+            error_card(label, tried=TRIED)
         else:
             metric_card(label, val, q.get("change_pct"), hint=hint, tooltip=tooltip)
 

@@ -10,7 +10,10 @@ from components.cards        import section_header, metric_card, error_card
 from components.charts       import line_chart
 from components.detail_panel import render_detail
 from services                import yfinance_service as yf_svc
+from services                import data_service     as data
 from utils                   import fmt_currency_usd
+
+TRIED = ["yfinance", "stooq"]
 
 inject_css()
 render_sidebar()
@@ -40,12 +43,8 @@ COLORS = {
 }
 
 with st.spinner("Carregando commodities..."):
-    quotes = yf_svc.get_quotes(list(ALL.values()))
-
-    @st.cache_data(ttl=900)
-    def _h(t): return yf_svc.get_history(t, period="6mo")
-
-    hists = {t: _h(t) for t in ALL.values()}
+    quotes = data.quotes(list(ALL.values()))
+    hists  = {t: data.history(t, period="6mo") for t in ALL.values()}
 
 
 def _card(col, label, ticker):
@@ -53,7 +52,7 @@ def _card(col, label, ticker):
     hint, tooltip = HINTS.get(ticker, ("", ""))
     with col:
         if q.get("error") or q.get("price") is None:
-            error_card(label)
+            error_card(label, tried=TRIED)
         else:
             metric_card(label, fmt_currency_usd(q["price"]),
                         q.get("change_pct"), hint=hint, tooltip=tooltip)

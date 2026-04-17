@@ -44,7 +44,7 @@ def get_treasury_curve() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-@st.cache_data(ttl=CACHE_TTL)
+@st.cache_data(ttl=CACHE_TTL, persist="disk")
 def get_treasury_history(series_id: str = "DGS10", years: int = 3) -> pd.DataFrame:
     """Historical yield for a single Treasury series."""
     try:

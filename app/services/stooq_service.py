@@ -68,7 +68,7 @@ def get_quote(ticker: str) -> dict:
         return {"ticker": ticker, "price": None, "error": True, "msg": str(e)}
 
 
-@st.cache_data(ttl=CACHE_TTL)
+@st.cache_data(ttl=CACHE_TTL, persist="disk")
 def get_history(ticker: str, period: str = "6mo") -> pd.DataFrame:
     """Fetch historical daily data from Stooq.
     period: "1mo", "3mo", "6mo", "1y", "2y", "5y" """
