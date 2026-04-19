@@ -406,22 +406,29 @@ try:
     from components.news_ticker  import render_news_ticker
     section_header("Live News", "Manchetes de economia e mercados — agregador BR + Global")
 
-    # Auto-refresh (5 min) se toggle ligado na sidebar
+    # Auto-refresh (5 min) via meta-refresh JS embutido — sem dependencia externa
     _news_auto = bool(st.session_state.get("news_autorefresh_home", True))
     _ar_status = "desligado"
-    _cnt = 0
     if _news_auto:
-        try:
-            from streamlit_autorefresh import st_autorefresh
-            _cnt = st_autorefresh(interval=300_000, key="news_home_autorefresh")
-            _ar_status = f"ligado (5min · ciclo #{_cnt})"
-            if _cnt > 0:
+        # Invalida cache quando a pagina foi recarregada por timer (detecta via query param)
+        if st.query_params.get("nref") == "1":
+            try:
                 news_svc.get_news.clear()
                 news_svc._fetch_feed.clear()
-        except ImportError:
-            _ar_status = "indisponível (pacote não instalado)"
-        except Exception as _ar_err:
-            _ar_status = f"erro: {_ar_err}"
+            except Exception:
+                pass
+        # Injeta JS: recarrega a pagina a cada 5min com ?nref=1
+        st.markdown(
+            '<script>'
+            'setTimeout(function(){'
+            '  var u = new URL(window.location.href);'
+            '  u.searchParams.set("nref","1");'
+            '  window.location.href = u.toString();'
+            '}, 300000);'
+            '</script>',
+            unsafe_allow_html=True,
+        )
+        _ar_status = "ligado (5min · auto-reload)"
 
     n_left, n_right = st.columns(2)
     import datetime as _dt

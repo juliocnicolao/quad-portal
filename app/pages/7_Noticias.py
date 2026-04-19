@@ -15,13 +15,6 @@ render_sidebar()
 page_header("Notícias — Live Feed",
             "Agregador em tempo real · Valor, InfoMoney, G1, BBC, CNBC, Reuters e mais")
 
-# ── Auto-refresh ─────────────────────────────────────────────────────────────
-try:
-    from streamlit_autorefresh import st_autorefresh
-    _HAS_AUTOREFRESH = True
-except ImportError:
-    _HAS_AUTOREFRESH = False
-
 # ── Controles ────────────────────────────────────────────────────────────────
 ctrl_c1, ctrl_c2, ctrl_c3, ctrl_c4 = st.columns([2, 2, 2, 2])
 with ctrl_c1:
@@ -39,17 +32,26 @@ with ctrl_c4:
         news._fetch_feed.clear()
         st.rerun()
 
-# Dispara rerun automatico conforme intervalo escolhido
-if _HAS_AUTOREFRESH and auto != "Desligado":
+# Auto-refresh via JS (sem dependencia externa)
+if auto != "Desligado":
     _intervals = {"1 min": 60_000, "2 min": 120_000,
                   "5 min": 300_000, "10 min": 600_000}
     _refresh_ms = _intervals[auto]
-    _count = st_autorefresh(interval=_refresh_ms, key="news_autorefresh")
-    # Invalida cache de 5min a cada ciclo (forca fetch novo)
-    if _count > 0:
+    # Invalida cache quando a pagina foi recarregada por timer
+    if st.query_params.get("nref") == "1":
         news.get_news.clear()
         news._fetch_feed.clear()
-    st.caption(f"⟳ Atualizando a cada {auto}. Último ciclo: #{_count}")
+    st.markdown(
+        f'<script>'
+        f'setTimeout(function(){{'
+        f'  var u = new URL(window.location.href);'
+        f'  u.searchParams.set("nref","1");'
+        f'  window.location.href = u.toString();'
+        f'}}, {_refresh_ms});'
+        f'</script>',
+        unsafe_allow_html=True,
+    )
+    st.caption(f"⟳ Auto-refresh ligado — recarrega a cada {auto}")
 
 region_key = {"Todas": "ALL", "🇧🇷 Brasil": "BR", "🌎 Global": "WORLD"}[region]
 
