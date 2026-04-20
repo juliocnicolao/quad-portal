@@ -97,6 +97,7 @@ def render_sidebar():
         st.page_link("pages/5_Fundamentos.py", label="Fundamentos",  icon="🌍")
         st.page_link("pages/6_Watchlist.py",   label="Watchlist",    icon="⭐")
         st.page_link("pages/7_Noticias.py",    label="Notícias",     icon="📰")
+        st.page_link("pages/8_Thesis_Monitor.py", label="Thesis Monitor", icon="🎯")
         st.markdown("---")
         st.markdown("**Preferências**")
         st.session_state["show_brl_equiv"] = st.toggle(
