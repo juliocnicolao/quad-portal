@@ -406,30 +406,81 @@ try:
     from components.news_ticker  import render_news_ticker
     section_header("Live News", "Manchetes de economia e mercados — agregador BR + Global")
 
-    # Auto-refresh server-side a cada 2min (dispara rerun mesmo com aba em background).
-    # Cai pra JS legado se o pacote nao estiver instalado.
+    # ── Auto-refresh robusto ────────────────────────────────────────────────
+    # Estrategia em 3 camadas (a prova de tab-suspension do browser):
+    #   1. meta http-equiv=refresh (honrado pelo browser mesmo em abas inativas)
+    #   2. Visibility API: ao voltar pra aba apos >110s, recarrega na hora
+    #   3. st_autorefresh server-side (bonus, quando o iframe nao esta suspenso)
+    # Invalidamos o cache sempre que a URL traz ?nref=1.
     _ar_status = "desligado"
     _news_auto = bool(st.session_state.get("news_autorefresh_home", True))
     if _news_auto:
+        # Trigger refresh por query param: invalida cache antes do fetch
+        if st.query_params.get("nref"):
+            try:
+                news_svc.get_news.clear()
+                news_svc._fetch_feed.clear()
+            except Exception:
+                pass
+
+        # Camada 3 (opcional): server-side tick quando o iframe nao for throttled
         try:
             from streamlit_autorefresh import st_autorefresh
             st_autorefresh(interval=120_000, key="news_autorefresh_tick")
-            _ar_status = "ligado (2min · server-side)"
         except Exception:
-            st.markdown(
-                '<script>setTimeout(function(){'
-                'var u=new URL(window.location.href);'
-                'u.searchParams.set("nref","1");'
-                'window.location.href=u.toString();}, 120000);</script>',
-                unsafe_allow_html=True,
-            )
-            if st.query_params.get("nref") == "1":
-                try:
-                    news_svc.get_news.clear()
-                    news_svc._fetch_feed.clear()
-                except Exception:
-                    pass
-            _ar_status = "ligado (2min · fallback JS)"
+            pass
+
+        # Camadas 1 + 2: meta-refresh + visibility API
+        st.markdown(
+            """
+            <script>
+            (function(){
+              // Preserva scroll entre reloads
+              try {
+                var saved = sessionStorage.getItem('quad_scroll_y');
+                if (saved !== null) {
+                  window.scrollTo(0, parseInt(saved));
+                  sessionStorage.removeItem('quad_scroll_y');
+                }
+              } catch(e){}
+
+              function doRefresh(){
+                try { sessionStorage.setItem('quad_scroll_y', window.scrollY); } catch(e){}
+                try { sessionStorage.setItem('quad_last_nref', Date.now().toString()); } catch(e){}
+                var u = new URL(window.location.href);
+                u.searchParams.set('nref', Date.now().toString());
+                window.location.href = u.toString();
+              }
+              function isStale(){
+                try {
+                  var last = parseInt(sessionStorage.getItem('quad_last_nref') || '0');
+                  return (Date.now() - last) > 110000;
+                } catch(e){ return true; }
+              }
+
+              // Camada 1: meta http-equiv=refresh (funciona mesmo com aba em background)
+              if (!document.getElementById('quad-meta-refresh')) {
+                var m = document.createElement('meta');
+                m.httpEquiv = 'refresh';
+                m.content   = '120;url=' + (function(){
+                  var u = new URL(window.location.href);
+                  u.searchParams.set('nref', Date.now().toString());
+                  return u.toString();
+                })();
+                m.id = 'quad-meta-refresh';
+                document.head.appendChild(m);
+              }
+
+              // Camada 2: Visibility API — refresh imediato ao voltar pra aba
+              document.addEventListener('visibilitychange', function(){
+                if (document.visibilityState === 'visible' && isStale()) doRefresh();
+              });
+            })();
+            </script>
+            """,
+            unsafe_allow_html=True,
+        )
+        _ar_status = "ligado (2min · meta-refresh + visibility)"
 
     # Botao de refresh manual — invalida cache e rerun
     _btn_col, _spacer = st.columns([1, 6])
