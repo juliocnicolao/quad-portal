@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import time
 import datetime as _dt
 from typing import Literal
@@ -28,18 +29,25 @@ FEEDS = {
     "BBC":          ("BBC Business",           "https://feeds.bbci.co.uk/news/business/rss.xml", "en", "WORLD", "#BB1919"),
     "CNBC":         ("CNBC Markets",           "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664", "en", "WORLD", "#005594"),
     "Yahoo":        ("Yahoo Finance",          "https://finance.yahoo.com/news/rssindex", "en", "WORLD", "#6001D2"),
-    "Reuters":      ("Reuters Business",       "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best", "en", "WORLD", "#FF8000"),
+    "GNews":        ("Markets Wire",           "https://news.google.com/rss/search?q=stock+market+OR+wall+street+when:1d&hl=en-US&gl=US&ceid=US:en", "en", "WORLD", "#FF8000"),
     "MarketWatch":  ("MarketWatch",            "https://feeds.content.dowjones.io/public/rss/mw_topstories", "en", "WORLD", "#18A1B0"),
 }
 
 
 def _parse_entry_time(entry) -> float:
-    """Extrai timestamp (epoch) de uma entry feedparser."""
+    """Extrai timestamp (epoch UTC) de uma entry feedparser.
+
+    feedparser.published_parsed devolve struct_time em UTC. Usamos
+    calendar.timegm (que trata a tupla como UTC) em vez de time.mktime
+    (que trataria como TZ local) para evitar distorcoes de fuso.
+    """
     for attr in ("published_parsed", "updated_parsed"):
-        t = getattr(entry, attr, None) or entry.get(attr) if hasattr(entry, "get") else None
+        t = getattr(entry, attr, None)
+        if t is None and hasattr(entry, "get"):
+            t = entry.get(attr)
         if t:
             try:
-                return time.mktime(t)
+                return float(calendar.timegm(t))
             except Exception:
                 pass
     return 0.0
@@ -58,7 +66,7 @@ def _fmt_age(ts: float) -> str:
     return f"há {int(delta/86400)}d"
 
 
-@st.cache_data(ttl=300, persist="disk")   # 5 min
+@st.cache_data(ttl=120, persist="disk")   # 2 min
 def _fetch_feed(url: str, limit: int = 15) -> list[dict]:
     """Busca um feed RSS individual. Retorna lista normalizada."""
     try:
@@ -81,7 +89,7 @@ def _fetch_feed(url: str, limit: int = 15) -> list[dict]:
         return []
 
 
-@st.cache_data(ttl=300, persist="disk")   # 5 min
+@st.cache_data(ttl=120, persist="disk")   # 2 min
 def get_news(
     region: Literal["ALL", "BR", "WORLD"] = "ALL",
     limit: int = 40,

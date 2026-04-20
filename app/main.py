@@ -406,29 +406,42 @@ try:
     from components.news_ticker  import render_news_ticker
     section_header("Live News", "Manchetes de economia e mercados — agregador BR + Global")
 
-    # Auto-refresh (5 min) via meta-refresh JS embutido — sem dependencia externa
-    _news_auto = bool(st.session_state.get("news_autorefresh_home", True))
+    # Auto-refresh server-side a cada 2min (dispara rerun mesmo com aba em background).
+    # Cai pra JS legado se o pacote nao estiver instalado.
     _ar_status = "desligado"
+    _news_auto = bool(st.session_state.get("news_autorefresh_home", True))
     if _news_auto:
-        # Invalida cache quando a pagina foi recarregada por timer (detecta via query param)
-        if st.query_params.get("nref") == "1":
+        try:
+            from streamlit_autorefresh import st_autorefresh
+            st_autorefresh(interval=120_000, key="news_autorefresh_tick")
+            _ar_status = "ligado (2min · server-side)"
+        except Exception:
+            st.markdown(
+                '<script>setTimeout(function(){'
+                'var u=new URL(window.location.href);'
+                'u.searchParams.set("nref","1");'
+                'window.location.href=u.toString();}, 120000);</script>',
+                unsafe_allow_html=True,
+            )
+            if st.query_params.get("nref") == "1":
+                try:
+                    news_svc.get_news.clear()
+                    news_svc._fetch_feed.clear()
+                except Exception:
+                    pass
+            _ar_status = "ligado (2min · fallback JS)"
+
+    # Botao de refresh manual — invalida cache e rerun
+    _btn_col, _spacer = st.columns([1, 6])
+    with _btn_col:
+        if st.button("🔄 Atualizar agora", key="news_refresh_btn",
+                     help="Força re-fetch dos feeds ignorando o cache"):
             try:
                 news_svc.get_news.clear()
                 news_svc._fetch_feed.clear()
             except Exception:
                 pass
-        # Injeta JS: recarrega a pagina a cada 5min com ?nref=1
-        st.markdown(
-            '<script>'
-            'setTimeout(function(){'
-            '  var u = new URL(window.location.href);'
-            '  u.searchParams.set("nref","1");'
-            '  window.location.href = u.toString();'
-            '}, 300000);'
-            '</script>',
-            unsafe_allow_html=True,
-        )
-        _ar_status = "ligado (5min · auto-reload)"
+            st.rerun()
 
     n_left, n_right = st.columns(2)
     import datetime as _dt

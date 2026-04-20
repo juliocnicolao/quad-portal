@@ -7,5 +7,6 @@ fredapi==0.5.2
 streamlit-extras==1.4.1
 Pillow==11.3.0
 feedparser==6.0.11
+streamlit-autorefresh==1.0.1
 numpy>=1.26
 scipy>=1.15
