@@ -7,6 +7,7 @@ Todas as funcoes recebem primitivos ou DataFrames e retornam dict/ndarray/float.
 
 from __future__ import annotations
 
+import datetime as _dt
 import math
 from typing import Literal
 
@@ -328,8 +329,75 @@ def _iv_for_scenario(spot_ret: float, iv_base: float) -> float:
     return iv_base
 
 
+DEFAULT_CUSTOM_LABELS = ["Queda 20%", "Bear base", "Cauda"]
+
+
+# Presets de teses reais (puts compradas pelo usuario). Mapeia ticker -> lista
+# de dicts com strike, expiry (YYYY-MM-DD), contracts, premium_paid. Dias ate
+# vencimento sao calculados em tempo de chamada por default_positions().
+THESIS_PRESETS: dict[str, list[dict]] = {
+    "PBR": [
+        {"strike": 15.00, "expiry": "2027-01-15", "contracts": 10, "premium_paid": 0.75},
+        {"strike": 17.00, "expiry": "2027-01-15", "contracts": 10, "premium_paid": 1.40},
+        {"strike": 18.00, "expiry": "2027-02-19", "contracts": 10, "premium_paid": 2.00},
+    ],
+}
+
+
+def default_positions(ticker: str, spot: float, iv_base: float | None = None,
+                      today: _dt.date | None = None,
+                      r: float = 0.045) -> list[dict]:
+    """Retorna lista de posicoes default para exibir no simulador de P&L.
+
+    Se `ticker` tiver preset em THESIS_PRESETS, usa esses valores e calcula
+    `days` a partir de `today` (default: hoje). Caso contrario, devolve 1
+    posicao generica (ATM, 90 dias, premio aproximado via Black-Scholes
+    usando `iv_base` ou IV_BASE_FALLBACK).
+
+    Args:
+        ticker: simbolo (case-insensitive).
+        spot: preco atual.
+        iv_base: IV media da chain (usada no premio BS do fallback).
+        today: data de referencia para calcular dias ate vencimento.
+        r: taxa livre de risco (usada no premio BS do fallback).
+
+    Returns:
+        Lista de dicts com chaves strike, days, contracts, premium_paid.
+    """
+    today = today or _dt.date.today()
+    key = (ticker or "").strip().upper()
+
+    if key in THESIS_PRESETS:
+        out = []
+        for p in THESIS_PRESETS[key]:
+            try:
+                exp = _dt.datetime.strptime(p["expiry"], "%Y-%m-%d").date()
+                days = max((exp - today).days, 1)
+            except Exception:
+                days = 90
+            out.append({
+                "strike":       float(p["strike"]),
+                "days":         int(days),
+                "contracts":    int(p["contracts"]),
+                "premium_paid": float(p["premium_paid"]),
+            })
+        return out
+
+    # Fallback generico: 1 posicao ATM 90d com premio BS
+    iv = iv_base if (iv_base and iv_base > 0) else IV_BASE_FALLBACK
+    days = 90
+    premium = bs_put_price(spot=spot, strike=spot, days=days, iv=iv, r=r)
+    return [{
+        "strike":       float(spot),
+        "days":         days,
+        "contracts":    1,
+        "premium_paid": round(float(premium), 2),
+    }]
+
+
 def pnl_scenarios(positions: list[dict], spot: float,
                   custom_spots: list[float] | None = None,
+                  custom_labels: list[str] | None = None,
                   iv_base: float | None = None,
                   r: float = 0.045) -> pd.DataFrame:
     """Simula P&L de posicoes de put em varios cenarios de spot.
@@ -338,7 +406,10 @@ def pnl_scenarios(positions: list[dict], spot: float,
         positions: lista de dicts com chaves:
             strike (float), days (int), contracts (int), premium_paid (float)
         spot: preco atual de referencia.
-        custom_spots: ate 3 niveis adicionais de spot. Default: [spot*0.8, spot*0.7, spot*0.55].
+        custom_spots: ate 3 niveis adicionais de spot. Default: [spot*0.8, spot*0.7, spot*0.55]
+            (bear progressivo: Queda 20% -> Bear base -> Cauda).
+        custom_labels: rotulos para os 3 cenarios customizaveis.
+            Default: ["Queda 20%", "Bear base", "Cauda"].
         iv_base: IV de base (de preferencia iv_avg do chain). Se None, usa IV_BASE_FALLBACK.
         r: taxa livre de risco.
 
@@ -357,8 +428,11 @@ def pnl_scenarios(positions: list[dict], spot: float,
     ]
     if custom_spots is None:
         custom_spots = [spot * 0.80, spot * 0.70, spot * 0.55]
-    for i, s in enumerate(custom_spots[:3], start=1):
-        fixed.append((f"Custom {i}", float(s)))
+    if custom_labels is None:
+        custom_labels = DEFAULT_CUSTOM_LABELS
+    for i, s in enumerate(custom_spots[:3]):
+        label = custom_labels[i] if i < len(custom_labels) else f"Custom {i+1}"
+        fixed.append((label, float(s)))
 
     rows = []
     for label, s in fixed:
