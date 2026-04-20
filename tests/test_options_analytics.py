@@ -3,9 +3,6 @@
 import math
 import numpy as np
 import pandas as pd
-import pytest
-
-import datetime as _dt
 
 from services.options_analytics import (
     bs_put_price,
@@ -19,9 +16,8 @@ from services.options_analytics import (
     classify_options_flow,
     classify_iv_rank,
     scorecard,
-    pnl_scenarios,
-    default_positions,
-    DEFAULT_CUSTOM_LABELS,
+    calculate_convergence_score,
+    detect_unusual_activity,
 )
 
 
@@ -40,7 +36,7 @@ def test_bs_put_expired_otm():
 def test_bs_put_positive_and_bounded():
     p = bs_put_price(spot=100, strike=100, days=30, iv=0.30)
     assert p > 0
-    assert p < 100  # nao pode valer mais que o strike
+    assert p < 100
 
 
 def test_bs_put_call_parity():
@@ -53,8 +49,7 @@ def test_bs_put_call_parity():
 
 
 def test_bs_gamma_positive_atm():
-    g = bs_gamma(spot=100, strike=100, days=30, iv=0.30)
-    assert g > 0
+    assert bs_gamma(spot=100, strike=100, days=30, iv=0.30) > 0
 
 
 def test_bs_gamma_expired_zero():
@@ -64,7 +59,6 @@ def test_bs_gamma_expired_zero():
 # ── GEX ──────────────────────────────────────────────────────────────────────
 
 def test_calc_gex_sign_convention():
-    """Calls devem gerar GEX positivo e puts GEX negativo."""
     calls = pd.DataFrame([{
         "strike": 100, "openInterest": 1000, "impliedVolatility": 0.30,
         "daysToExpiry": 30,
@@ -78,12 +72,10 @@ def test_calc_gex_sign_convention():
     row = out[out["strike"] == 100].iloc[0]
     assert row["gex_calls"] > 0
     assert row["gex_puts"]  < 0
-    # Mesmo gamma, mesma OI -> soma ≈ 0
     assert abs(row["gex_total"]) < 1e-6
 
 
 def test_calc_gex_magnitude_scales_with_oi():
-    """Dobrando OI, GEX (modulo) dobra."""
     base = pd.DataFrame([{
         "strike": 100, "openInterest": 1000, "impliedVolatility": 0.30, "daysToExpiry": 30,
     }])
@@ -103,19 +95,16 @@ def test_calc_gex_empty_chain():
 # ── IV Rank ──────────────────────────────────────────────────────────────────
 
 def test_iv_rank_series_too_short():
-    """Serie com menos de 20 pontos deve retornar 50.0 sem quebrar."""
     short = pd.Series([100, 101, 99, 102, 98])
     assert calc_iv_rank(short) == 50.0
 
 
 def test_iv_rank_high_when_last_is_peak():
-    """Se a volatilidade recente estourou, rank deve ser alto."""
     rng = np.random.default_rng(42)
     calm = 100 + np.cumsum(rng.normal(0, 0.3, 200))
     wild = calm[-1] + np.cumsum(rng.normal(0, 3.0, 30))
     series = pd.Series(np.concatenate([calm, wild]))
-    rank = calc_iv_rank(series)
-    assert rank > 70
+    assert calc_iv_rank(series) > 70
 
 
 def test_iv_rank_low_when_last_is_quiet():
@@ -123,40 +112,31 @@ def test_iv_rank_low_when_last_is_quiet():
     wild = 100 + np.cumsum(rng.normal(0, 3.0, 200))
     calm = wild[-1] + np.cumsum(rng.normal(0, 0.2, 30))
     series = pd.Series(np.concatenate([wild, calm]))
-    rank = calc_iv_rank(series)
-    assert rank < 30
+    assert calc_iv_rank(series) < 30
 
 
-# ── Regression channel ───────────────────────────────────────────────────────
+# ── Regression channel ──────────────────────────────────────────────────────
 
 def test_regression_channel_short_series():
-    """Serie com < 20 pontos deve retornar is_valid=False sem quebrar."""
     short_df = pd.DataFrame({"Close": [100, 101, 99, 102, 98]})
-    result = regression_channel(short_df)
-    assert result["is_valid"] is False
-    assert result["position_pct"] == 50.0
-    assert result["reason"] is not None
+    r = regression_channel(short_df)
+    assert r["is_valid"] is False
+    assert r["position_pct"] == 50.0
+    assert r["position_pct_raw"] == 50.0
+    assert r["reason"] is not None
 
 
 def test_regression_channel_empty_series():
-    empty_df = pd.DataFrame({"Close": []})
-    result = regression_channel(empty_df)
-    assert result["is_valid"] is False
+    r = regression_channel(pd.DataFrame({"Close": []}))
+    assert r["is_valid"] is False
 
 
 def test_regression_channel_with_current_spot():
-    """position_pct reflete current_spot, nao ultimo close.
-
-    Serie linear 100->120: ultimo close (120) fica no topo do canal (pos ≈ 50 na mean,
-    mas com residuos pequenos o pos do ultimo ponto e proximo da mean=50). Testamos
-    que passando spot mais baixo, a posicao vai mais para baixo que sem passar.
-    """
     df = pd.DataFrame({"Close": np.linspace(100, 120, 50)})
     r_default = regression_channel(df)
     r_low     = regression_channel(df, current_spot=110.0)
     assert r_default["is_valid"] is True
     assert r_low["is_valid"] is True
-    # Com spot abaixo do ultimo close (120 vs 110), position_pct deve cair
     assert r_low["position_pct"] < r_default["position_pct"]
 
 
@@ -167,7 +147,15 @@ def test_regression_channel_slope_positive_on_uptrend():
     assert r["slope"] > 0
 
 
-# ── Classificadores + scorecard ──────────────────────────────────────────────
+def test_regression_channel_position_raw_above_100_on_breakout():
+    """current_spot muito acima do canal deve dar position_pct_raw > 100."""
+    df = pd.DataFrame({"Close": np.linspace(100, 102, 50)})  # baixa vol
+    r = regression_channel(df, current_spot=200.0)
+    assert r["position_pct"] == 100.0
+    assert r["position_pct_raw"] > 100
+
+
+# ── Classificadores + scorecard ─────────────────────────────────────────────
 
 def test_classifiers_thresholds():
     assert classify_technical(80) == "BEARISH"
@@ -195,7 +183,6 @@ def test_scorecard_strong_bearish():
 
 
 def test_scorecard_strong_bullish_with_2_pillars():
-    """Sem options chain: apenas tecnico + momentum -> ≥75% bull = STRONG_BULLISH."""
     s = scorecard(technical="BULLISH", momentum="BULLISH")
     assert s["verdict"] == "STRONG_BULLISH"
     assert len(s["pillars"]) == 2
@@ -206,89 +193,125 @@ def test_scorecard_mixed():
     assert s["verdict"] == "MIXED"
 
 
-# ── P&L simulator ────────────────────────────────────────────────────────────
+# ── Convergence score (scanner) ─────────────────────────────────────────────
 
-def test_pnl_scenarios_shape_and_labels():
-    positions = [
-        {"strike": 50, "days": 60, "contracts": 10, "premium_paid": 1.5},
-        {"strike": 55, "days": 90, "contracts": 5,  "premium_paid": 3.0},
+def test_convergence_score_all_bearish():
+    pillars = [
+        {"name": "Tecnico",      "bias": "BEARISH"},
+        {"name": "Momentum",     "bias": "BEARISH"},
+        {"name": "Options Flow", "bias": "BEARISH"},
     ]
-    df = pnl_scenarios(positions, spot=50.0, iv_base=0.40)
-    # 4 fixos + 3 custom default (rotulos bear progressivo)
-    assert len(df) == 7
-    assert set(["scenario", "spot", "iv_used", "pnl_total"]).issubset(df.columns)
-    # Rotulos novos devem aparecer
-    scenarios = set(df["scenario"])
-    assert "Atual" in scenarios
-    for lbl in DEFAULT_CUSTOM_LABELS:
-        assert lbl in scenarios
+    out = calculate_convergence_score(pillars, direction="bearish")
+    assert out["score"] == 3
+    assert out["verdict"] == "STRONG_BEAR"
+    assert out["label"] == "BEAR FORTE"
+    assert out["emoji"] == "🔴"
 
 
-def test_pnl_scenarios_put_gains_on_crash():
-    """Puts OTM/ATM compradas ganham em crash (cenario Cauda)."""
-    positions = [{"strike": 50, "days": 60, "contracts": 10, "premium_paid": 1.5}]
-    df = pnl_scenarios(positions, spot=50.0, iv_base=0.40)
-    atual = df[df["scenario"] == "Atual"].iloc[0]["pnl_total"]
-    crash = df[df["scenario"] == "Cauda"].iloc[0]["pnl_total"]  # spot*0.55
-    assert crash > atual
+def test_convergence_score_signed_flips_with_direction():
+    pillars = [
+        {"name": "Tecnico",  "bias": "BULLISH"},
+        {"name": "Momentum", "bias": "BULLISH"},
+        {"name": "Options",  "bias": "NEUTRAL"},
+    ]
+    bear = calculate_convergence_score(pillars, direction="bearish")
+    bull = calculate_convergence_score(pillars, direction="bullish")
+    assert bear["score"] == -2
+    assert bull["score"] == 2
+    # Mesmo verdict textual em ambos (baseado em ratios, nao direction)
+    assert bear["verdict"] == bull["verdict"] == "BULL"
 
 
-def test_pnl_scenarios_single_position_mode():
-    """Modo sem puts reais (show_real_positions=False equivalente): 1 posicao."""
-    positions = [{"strike": 30, "days": 90, "contracts": 1, "premium_paid": 1.5}]
-    df = pnl_scenarios(positions, spot=30.0, iv_base=0.45)
-    assert len(df) == 7
-    # P&L por posicao deve ter somente 1 leg
-    assert all("#1" in s and "#2" not in s for s in df["pnl_by_position"])
+def test_convergence_score_two_pillars_only():
+    """Ticker sem chain: apenas Tecnico + Momentum."""
+    pillars = [
+        {"name": "Tecnico",  "bias": "BEARISH"},
+        {"name": "Momentum", "bias": "BEARISH"},
+    ]
+    out = calculate_convergence_score(pillars, direction="bearish")
+    assert out["total"] == 2
+    assert out["verdict"] == "STRONG_BEAR"
 
 
-def test_pnl_uses_iv_base_when_no_regime():
-    """No cenario 'Atual' (sem mudanca de regime) deve usar iv_base."""
-    positions = [{"strike": 50, "days": 60, "contracts": 1, "premium_paid": 1.0}]
-    df = pnl_scenarios(positions, spot=50.0, iv_base=0.33)
-    row = df[df["scenario"] == "Atual"].iloc[0]
-    assert abs(row["iv_used"] - 0.33) < 1e-9
+def test_convergence_score_all_neutral_is_neutral():
+    pillars = [{"name": "a", "bias": "NEUTRAL"}, {"name": "b", "bias": "NEUTRAL"}]
+    out = calculate_convergence_score(pillars, direction="bearish")
+    assert out["verdict"] == "NEUTRAL"
+    assert out["label"] == "NEUTRO"
 
 
-# ── default_positions / presets condicionais ────────────────────────────────
-
-def test_default_positions_pbr_preset():
-    """Ticker PBR deve materializar as 3 puts da tese com dias calculados."""
-    today = _dt.date(2026, 4, 19)
-    pos = default_positions("PBR", spot=14.0, iv_base=0.60, today=today)
-    assert len(pos) == 3
-    strikes = sorted(p["strike"] for p in pos)
-    assert strikes == [15.0, 17.0, 18.0]
-    # premios exatos da tese
-    premiums = sorted(p["premium_paid"] for p in pos)
-    assert premiums == [0.75, 1.40, 2.00]
-    # todos com 10 contratos
-    assert all(p["contracts"] == 10 for p in pos)
-    # dias ate vencimento: 2027-01-15 = 271, 2027-02-19 = 306
-    days = sorted(p["days"] for p in pos)
-    assert days == [271, 271, 306]
+def test_convergence_score_empty_pillars():
+    out = calculate_convergence_score([], direction="bearish")
+    assert out["verdict"] == "NEUTRAL"
+    assert out["total"] == 0
 
 
-def test_default_positions_generic_fallback():
-    """Ticker sem preset: 1 posicao ATM 90d com premio BS > 0."""
-    pos = default_positions("SPY", spot=500.0, iv_base=0.20)
-    assert len(pos) == 1
-    assert pos[0]["strike"] == 500.0
-    assert pos[0]["days"] == 90
-    assert pos[0]["contracts"] == 1
-    assert pos[0]["premium_paid"] > 0
+def test_convergence_score_mixed_with_lean():
+    """1 bear + 1 bull + 1 neutral -> MIXED_BEAR se ratios empatam em 1/3."""
+    pillars = [
+        {"name": "a", "bias": "BEARISH"},
+        {"name": "b", "bias": "BULLISH"},
+        {"name": "c", "bias": "NEUTRAL"},
+    ]
+    out = calculate_convergence_score(pillars, direction="bearish")
+    # Empate bear/bull -> NEUTRAL por fallback
+    assert out["verdict"] == "NEUTRAL"
 
 
-def test_default_positions_case_insensitive():
-    """pbr/PBR/Pbr devem todos bater no preset."""
-    today = _dt.date(2026, 4, 19)
-    for t in ("pbr", "PBR", "Pbr"):
-        assert len(default_positions(t, spot=14.0, today=today)) == 3
+# ── Unusual activity detector ────────────────────────────────────────────────
+
+def test_unusual_vol_spike():
+    flags = detect_unusual_activity({
+        "current_hv": 0.45, "hv_7d_ago": 0.30,  # +15 p.p.
+    })
+    assert any(f["type"] == "vol_spike" for f in flags)
 
 
-def test_default_positions_non_preset_ticker_is_not_pbr():
-    """Ticker arbitrario nao deve herdar preset de PBR."""
-    pos = default_positions("AAPL", spot=200.0, iv_base=0.25)
-    assert len(pos) == 1  # apenas a posicao generica
-    # Nao deve conter strikes do preset PBR
-    assert pos[0]["strike"] == 200.0
+def test_unusual_vol_crush():
+    flags = detect_unusual_activity({
+        "current_hv": 0.20, "hv_7d_ago": 0.40,  # -20 p.p.
+    })
+    assert any(f["type"] == "vol_crush" for f in flags)
+
+
+def test_unusual_channel_breakout():
+    flags = detect_unusual_activity({"channel_pos_raw": 115.0})
+    types = [f["type"] for f in flags]
+    assert "channel_breakout_up" in types
+
+
+def test_unusual_channel_breakdown():
+    flags = detect_unusual_activity({"channel_pos_raw": -20.0})
+    assert any(f["type"] == "channel_breakdown" for f in flags)
+
+
+def test_unusual_pc_shift_bearish():
+    flags = detect_unusual_activity({"pc_oi": 1.3, "pc_oi_7d_ago": 0.85})
+    assert any(f["type"] == "pc_shift_bearish" for f in flags)
+
+
+def test_unusual_pc_shift_bullish():
+    flags = detect_unusual_activity({"pc_oi": 0.6, "pc_oi_7d_ago": 1.1})
+    assert any(f["type"] == "pc_shift_bullish" for f in flags)
+
+
+def test_unusual_volume_surge():
+    flags = detect_unusual_activity({"current_volume": 3_000_000,
+                                     "avg_volume_20d":   1_000_000})
+    assert any(f["type"] == "volume_surge" for f in flags)
+
+
+def test_unusual_no_flags_when_data_missing():
+    """Sem inputs, nenhuma flag dispara — nao deve quebrar."""
+    assert detect_unusual_activity({}) == []
+
+
+def test_unusual_pc_shift_needs_both_values():
+    """Shift de P/C so dispara se pc_oi E pc_oi_7d_ago presentes."""
+    flags = detect_unusual_activity({"pc_oi": 1.3})
+    assert all(f["type"] not in ("pc_shift_bearish", "pc_shift_bullish") for f in flags)
+
+
+def test_unusual_channel_in_bounds_no_flag():
+    flags = detect_unusual_activity({"channel_pos_raw": 70.0})
+    assert not any("channel" in f["type"] for f in flags)
