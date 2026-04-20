@@ -1,7 +1,23 @@
 """Thesis Monitor — canal de regressao, options flow, P&L simulator, scorecard.
 
-Monitora tese direcional em qualquer ticker americano. Toda matematica esta em
-services/options_analytics.py (pura, testada). Esta pagina so renderiza.
+Pagina para monitoramento de teses direcionais estruturadas. Combina analise
+tecnica (canal de regressao), fluxo de opcoes (P/C ratio, IV rank, GEX) e
+simulacao de P&L em multiplos cenarios. Scorecard agrega 3-4 pilares em
+veredito de convergencia.
+
+**Ativos suportados:** qualquer ticker com dados no yfinance. Secoes de options
+flow aparecem apenas para ativos com option chain (PBR, EWZ, SPY, XLE, etc).
+Ativos sem chain (ex. BZ=F, BRL=X) mostram apenas analise tecnica + scorecard
+com 2 pilares.
+
+**Limitacoes conhecidas:**
+- Dados fim-de-dia (yfinance). Para intraday, usar a plataforma do broker.
+- IV Rank e proxy via HV252d, nao IV historica real.
+- GEX assume convencao padrao de posicionamento dealer (short calls / long
+  puts), pode divergir em eventos extremos.
+
+Toda matematica pura esta em services/options_analytics.py; I/O em
+services/options_service.py. Esta pagina apenas renderiza.
 """
 
 import sys, os
@@ -230,43 +246,73 @@ else:
 # ── 4. Simulador P&L (so com chain) ──────────────────────────────────────────
 if has_chain:
     section_header("Simulador P&L — puts compradas",
-                   "Configure posicoes na sidebar. P&L teorico em 7 cenarios.")
-
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("**Thesis Monitor — puts**")
-        n_legs = st.number_input("N de posicoes", min_value=1, max_value=6,
-                                 value=3, step=1, key="tm_nlegs")
-
-        positions: list[dict] = []
-        for i in range(int(n_legs)):
-            st.caption(f"**Put #{i+1}**")
-            strike_default   = round(spot * (0.9 - 0.05 * i), 2)
-            contracts_default = 10
-            prem_default     = round(spot * 0.02, 2)
-            days_default     = 60 + 30 * i
-
-            k  = st.number_input(f"Strike #{i+1}",        value=float(strike_default),
-                                 min_value=0.01, step=0.5, key=f"tm_k_{i}")
-            d  = st.number_input(f"Dias ate venc. #{i+1}", value=int(days_default),
-                                 min_value=1, step=1, key=f"tm_d_{i}")
-            c  = st.number_input(f"Contratos #{i+1}",     value=int(contracts_default),
-                                 min_value=1, step=1, key=f"tm_c_{i}")
-            p  = st.number_input(f"Premio pago #{i+1} (USD/acao)",
-                                 value=float(prem_default), min_value=0.0, step=0.05,
-                                 key=f"tm_p_{i}")
-            positions.append({"strike": k, "days": d, "contracts": c, "premium_paid": p})
-
-        st.caption("Cenarios customizaveis (spot):")
-        c1 = st.number_input("Custom 1", value=round(spot * 0.80, 2),
-                             min_value=0.01, step=0.5, key="tm_cs1")
-        c2 = st.number_input("Custom 2", value=round(spot * 0.70, 2),
-                             min_value=0.01, step=0.5, key="tm_cs2")
-        c3 = st.number_input("Custom 3", value=round(spot * 0.55, 2),
-                             min_value=0.01, step=0.5, key="tm_cs3")
-        custom_spots = [c1, c2, c3]
+                   "Tese bearish: 4 cenarios fixos + 3 bear progressivos customizaveis.")
 
     iv_base = chain["iv_avg"] or oa.IV_BASE_FALLBACK
+    preset = oa.default_positions(focal, spot=spot, iv_base=iv_base)
+
+    # Toggle — modo exploracao vs tracking operacional
+    show_real = st.toggle(
+        "💼 Tenho puts reais nesse ativo",
+        value=st.session_state.get(f"tm_real_{focal}", False),
+        help="Ative para configurar suas posicoes reais na sidebar e ver P&L calibrado. "
+             "Desligado: mostra 1 put ATM teorica (exploracao).",
+        key=f"tm_real_{focal}",
+    )
+
+    if show_real:
+        with st.sidebar:
+            st.markdown("---")
+            st.markdown(f"**Thesis Monitor — puts em {focal}**")
+            default_n = len(preset) if preset else 1
+            n_legs = st.number_input("N de posicoes", min_value=1, max_value=6,
+                                     value=int(default_n), step=1, key="tm_nlegs")
+
+            positions: list[dict] = []
+            for i in range(int(n_legs)):
+                st.caption(f"**Put #{i+1}**")
+                # Preset do ticker se existir, senao generico
+                if i < len(preset):
+                    strike_default   = preset[i]["strike"]
+                    days_default     = preset[i]["days"]
+                    contracts_default = preset[i]["contracts"]
+                    prem_default     = preset[i]["premium_paid"]
+                else:
+                    strike_default   = round(spot * (0.9 - 0.05 * i), 2)
+                    days_default     = 60 + 30 * i
+                    contracts_default = 10
+                    prem_default     = round(spot * 0.02, 2)
+
+                k = st.number_input(f"Strike #{i+1}", value=float(strike_default),
+                                    min_value=0.01, step=0.5, key=f"tm_k_{i}")
+                d = st.number_input(f"Dias ate venc. #{i+1}", value=int(days_default),
+                                    min_value=1, step=1, key=f"tm_d_{i}")
+                c = st.number_input(f"Contratos #{i+1}", value=int(contracts_default),
+                                    min_value=1, step=1, key=f"tm_c_{i}")
+                p = st.number_input(
+                    f"Premio pago #{i+1} (USD/acao)",
+                    value=float(prem_default), min_value=0.0, step=0.05,
+                    help="Ajuste para o premio efetivamente pago na sua corretora.",
+                    key=f"tm_p_{i}",
+                )
+                positions.append({"strike": k, "days": d, "contracts": c, "premium_paid": p})
+
+            st.caption("Cenarios bear customizaveis (spot):")
+            c1 = st.number_input("Queda 20%", value=round(spot * 0.80, 2),
+                                 min_value=0.01, step=0.5, key="tm_cs1")
+            c2 = st.number_input("Bear base", value=round(spot * 0.70, 2),
+                                 min_value=0.01, step=0.5, key="tm_cs2")
+            c3 = st.number_input("Cauda",     value=round(spot * 0.55, 2),
+                                 min_value=0.01, step=0.5, key="tm_cs3")
+            custom_spots = [c1, c2, c3]
+    else:
+        # Modo exploracao: 1 put ATM teorica, sem inputs na sidebar
+        positions    = preset if len(preset) == 1 else \
+                       oa.default_positions("__generic__", spot=spot, iv_base=iv_base)
+        custom_spots = [spot * 0.80, spot * 0.70, spot * 0.55]
+        st.caption("ℹ Modo exploracao: 1 put ATM teorica. "
+                   "Ative o toggle acima para configurar suas puts reais.")
+
     pnl_df = oa.pnl_scenarios(positions, spot=spot,
                               custom_spots=custom_spots, iv_base=iv_base)
 
