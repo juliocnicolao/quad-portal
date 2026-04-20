@@ -271,7 +271,13 @@ try:
         },
         key="tm_scanner_df",
     )
-    selected_rows = event.selection.rows if hasattr(event, "selection") else []
+    # API de selecao mudou entre versoes — tenta ambos os shapes
+    selected_rows = []
+    try:
+        sel = getattr(event, "selection", None) or event.get("selection", {})
+        selected_rows = getattr(sel, "rows", None) or sel.get("rows", [])
+    except Exception:
+        selected_rows = []
     table_api_ok = True
 except Exception as _e:
     # Fallback para Streamlit antigo que nao suporta on_select
@@ -477,12 +483,12 @@ iv_label = oa.classify_iv_rank(focal_snap["iv_rank"])
 _chip_col = {"BEARISH": COLOR_RED, "BULLISH": COLOR_GREEN, "NEUTRAL": "#888"}
 chip_html = ""
 for p in pillars:
-    c = _chip_col[p["bias"]]
+    c = _chip_col.get(p["bias"], "#555")
     chip_html += (f'<span style="display:inline-block;background:{c};color:#fff;'
                   f'font-size:0.72rem;font-weight:700;padding:4px 10px;'
                   f'border-radius:4px;margin-right:6px;letter-spacing:0.05em;">'
                   f'{p["name"]}: {p["bias"]}</span>')
-_iv_col = {"HIGH": COLOR_RED, "LOW": COLOR_GREEN, "MID": "#888", "N/A": "#555"}[iv_label]
+_iv_col = {"HIGH": COLOR_RED, "LOW": COLOR_GREEN, "MID": "#888", "N/A": "#555"}.get(iv_label, "#555")
 chip_html += (f'<span style="display:inline-block;background:{_iv_col};color:#fff;'
               f'font-size:0.72rem;font-weight:700;padding:4px 10px;border-radius:4px;'
               f'letter-spacing:0.05em;">IV Rank: {iv_label}</span>')
