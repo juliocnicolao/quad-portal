@@ -406,83 +406,7 @@ try:
     from components.news_ticker  import render_news_ticker
     section_header("Live News", "Manchetes de economia e mercados — agregador BR + Global")
 
-    # ── Auto-refresh robusto ────────────────────────────────────────────────
-    # Estrategia em 3 camadas (a prova de tab-suspension do browser):
-    #   1. meta http-equiv=refresh (honrado pelo browser mesmo em abas inativas)
-    #   2. Visibility API: ao voltar pra aba apos >110s, recarrega na hora
-    #   3. st_autorefresh server-side (bonus, quando o iframe nao esta suspenso)
-    # Invalidamos o cache sempre que a URL traz ?nref=1.
-    _ar_status = "desligado"
-    _news_auto = bool(st.session_state.get("news_autorefresh_home", True))
-    if _news_auto:
-        # Trigger refresh por query param: invalida cache antes do fetch
-        if st.query_params.get("nref"):
-            try:
-                news_svc.get_news.clear()
-                news_svc._fetch_feed.clear()
-            except Exception:
-                pass
-
-        # Camada 3 (opcional): server-side tick quando o iframe nao for throttled
-        try:
-            from streamlit_autorefresh import st_autorefresh
-            st_autorefresh(interval=120_000, key="news_autorefresh_tick")
-        except Exception:
-            pass
-
-        # Camadas 1 + 2: meta-refresh + visibility API
-        st.markdown(
-            """
-            <script>
-            (function(){
-              // Preserva scroll entre reloads
-              try {
-                var saved = sessionStorage.getItem('quad_scroll_y');
-                if (saved !== null) {
-                  window.scrollTo(0, parseInt(saved));
-                  sessionStorage.removeItem('quad_scroll_y');
-                }
-              } catch(e){}
-
-              function doRefresh(){
-                try { sessionStorage.setItem('quad_scroll_y', window.scrollY); } catch(e){}
-                try { sessionStorage.setItem('quad_last_nref', Date.now().toString()); } catch(e){}
-                var u = new URL(window.location.href);
-                u.searchParams.set('nref', Date.now().toString());
-                window.location.href = u.toString();
-              }
-              function isStale(){
-                try {
-                  var last = parseInt(sessionStorage.getItem('quad_last_nref') || '0');
-                  return (Date.now() - last) > 110000;
-                } catch(e){ return true; }
-              }
-
-              // Camada 1: meta http-equiv=refresh (funciona mesmo com aba em background)
-              if (!document.getElementById('quad-meta-refresh')) {
-                var m = document.createElement('meta');
-                m.httpEquiv = 'refresh';
-                m.content   = '120;url=' + (function(){
-                  var u = new URL(window.location.href);
-                  u.searchParams.set('nref', Date.now().toString());
-                  return u.toString();
-                })();
-                m.id = 'quad-meta-refresh';
-                document.head.appendChild(m);
-              }
-
-              // Camada 2: Visibility API — refresh imediato ao voltar pra aba
-              document.addEventListener('visibilitychange', function(){
-                if (document.visibilityState === 'visible' && isStale()) doRefresh();
-              });
-            })();
-            </script>
-            """,
-            unsafe_allow_html=True,
-        )
-        _ar_status = "ligado (2min · meta-refresh + visibility)"
-
-    # Botao de refresh manual — invalida cache e rerun
+    # Botao de refresh manual (fora do fragment pra afetar toda a sessao)
     _btn_col, _spacer = st.columns([1, 6])
     with _btn_col:
         if st.button("🔄 Atualizar agora", key="news_refresh_btn",
@@ -494,24 +418,85 @@ try:
                 pass
             st.rerun()
 
-    n_left, n_right = st.columns(2)
-    import datetime as _dt
-    _fetch_ts = _dt.datetime.now().strftime("%H:%M:%S")
-    with st.spinner("Buscando notícias..."):
-        br_news    = news_svc.get_news(region="BR",    limit=12)
-        world_news = news_svc.get_news(region="WORLD", limit=12)
-        br_news    = news_svc.refresh_age_strings(br_news)
-        world_news = news_svc.refresh_age_strings(world_news)
-    with n_left:
-        render_news_ticker(br_news,    title="🇧🇷 BRASIL LIVE",  show_count=True)
-    with n_right:
-        render_news_ticker(world_news, title="🌎 GLOBAL LIVE",  show_count=True)
+    # ── Fragment: re-executa SO o bloco das noticias a cada 2min ─────────────
+    # st.fragment(run_every=...) nao recarrega a pagina, so o bloco. Zero flicker,
+    # nao perde scroll. Disponivel no Streamlit >= 1.36.
+    @st.fragment(run_every=120)
+    def _render_news_block():
+        import datetime as _dt
+        # Invalida caches pra garantir fetch fresh a cada tick do fragment
+        try:
+            news_svc.get_news.clear()
+            news_svc._fetch_feed.clear()
+        except Exception:
+            pass
+
+        n_left, n_right = st.columns(2)
+        _fetch_ts = _dt.datetime.now().strftime("%H:%M:%S")
+        with st.spinner("Buscando notícias..."):
+            br_news    = news_svc.get_news(region="BR",    limit=12)
+            world_news = news_svc.get_news(region="WORLD", limit=12)
+            br_news    = news_svc.refresh_age_strings(br_news)
+            world_news = news_svc.refresh_age_strings(world_news)
+        with n_left:
+            render_news_ticker(br_news,    title="🇧🇷 BRASIL LIVE",  show_count=True)
+        with n_right:
+            render_news_ticker(world_news, title="🌎 GLOBAL LIVE",  show_count=True)
+
+        # Rodape com contador visivel ("proxima atualizacao em MM:SS")
+        st.markdown(
+            f"""
+            <div style="display:flex;justify-content:space-between;align-items:center;
+                        margin-top:0.4rem;font-size:0.72rem;color:#777;">
+              <span>⟳ Auto-refresh ligado (2min · fragment) · último fetch {_fetch_ts}
+                <span id="quad-news-countdown" style="color:#0a9;margin-left:0.5rem;"></span>
+              </span>
+              <a href="/Noticias" target="_self" style="color:#888;text-decoration:none;">
+                Ver todas as notícias →</a>
+            </div>
+            <script>
+            (function(){{
+              var startMs = Date.now();
+              var duration = 120000;
+              function tick(){{
+                var el = document.getElementById('quad-news-countdown');
+                if (!el) return;
+                var rem = Math.max(0, duration - (Date.now() - startMs));
+                var m = Math.floor(rem/60000);
+                var s = Math.floor((rem%60000)/1000);
+                el.textContent = '· próxima em ' + m + ':' + (s<10?'0':'') + s;
+              }}
+              tick();
+              if (window._quadNewsCountdownIv) clearInterval(window._quadNewsCountdownIv);
+              window._quadNewsCountdownIv = setInterval(tick, 1000);
+            }})();
+            </script>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    _render_news_block()
+
+    # Fallback invisivel: caso fragment nao dispare (ex.: aba suspensa por horas),
+    # visibility API forca rerun quando voltar pra aba com dados >3min antigos.
     st.markdown(
-        '<div style="display:flex;justify-content:space-between;align-items:center;'
-        'margin-top:0.4rem;font-size:0.72rem;">'
-        f'<span style="color:#555;">⟳ Auto-refresh {_ar_status} · última renderização {_fetch_ts}</span>'
-        '<a href="/Noticias" target="_self" style="color:#888;text-decoration:none;">'
-        'Ver todas as notícias →</a></div>',
+        """
+        <script>
+        (function(){
+          document.addEventListener('visibilitychange', function(){
+            if (document.visibilityState === 'visible') {
+              var last = parseInt(sessionStorage.getItem('quad_news_seen') || '0');
+              sessionStorage.setItem('quad_news_seen', Date.now().toString());
+              if (last && (Date.now() - last) > 180000) {
+                // Mais de 3min fora -> forca reload completo como last-resort
+                window.location.reload();
+              }
+            }
+          });
+          sessionStorage.setItem('quad_news_seen', Date.now().toString());
+        })();
+        </script>
+        """,
         unsafe_allow_html=True,
     )
 except Exception as _news_err:
