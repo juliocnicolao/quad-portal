@@ -39,6 +39,7 @@ from components.cards         import section_header, metric_card, error_card
 from services                 import data_service       as data
 from services                 import options_service    as opt_svc
 from services                 import options_analytics  as oa
+from services                 import iv_history_service as iv_hist
 from services.watchlist_presets import (WATCHLIST_PRESETS, get_preset,
                                         get_preset_names)
 from utils                    import (fmt_currency_usd, fmt_pct, CACHE_TTL,
@@ -135,7 +136,6 @@ def _ticker_snapshot(ticker: str) -> dict:
     hist = data.history(ticker, period="1y")
     change_5d = None
     current_hv = hv_7d_ago = None
-    iv_rank = 50.0
     channel_pos = 50.0
     channel_pos_raw = 50.0
     channel_valid = False
@@ -150,7 +150,6 @@ def _ticker_snapshot(ticker: str) -> dict:
             current_hv = float(hv_series.iloc[-1])
             if len(hv_series) > 7:
                 hv_7d_ago = float(hv_series.iloc[-8])
-        iv_rank = oa.calc_iv_rank(closes)
         ch = oa.regression_channel(hist, n_std=2.0, current_spot=price)
         channel_pos     = ch["position_pct"]
         channel_pos_raw = ch["position_pct_raw"]
@@ -172,10 +171,20 @@ def _ticker_snapshot(ticker: str) -> dict:
     has_chain = chain["available"] and not (chain["calls"].empty and chain["puts"].empty)
     pc_oi  = chain["pc_oi"] if has_chain else None
     gex_sum = None
+    iv_atm = None
     if has_chain:
         g = oa.calc_gex(chain, spot=price)
         if not g.empty:
             gex_sum = float(g["gex_total"].sum())
+        iv_atm = iv_hist.compute_atm_iv(chain, spot=price)
+
+    # IV Rank real (CBOE proxy ou self-history)
+    iv_rank_info = iv_hist.get_iv_rank(ticker, current_iv=iv_atm)
+
+    # IV/HV spread — sinal de vol regime (IV > HV = opcoes caras)
+    iv_hv_ratio = None
+    if iv_atm is not None and current_hv is not None and current_hv > 0:
+        iv_hv_ratio = iv_atm / current_hv
 
     # Pilares — so adiciona os disponiveis
     tech_bias = oa.classify_technical(channel_pos) if channel_valid else None
@@ -196,7 +205,12 @@ def _ticker_snapshot(ticker: str) -> dict:
         "channel_valid":    channel_valid,
         "current_hv":       current_hv,
         "hv_7d_ago":        hv_7d_ago,
-        "iv_rank":          iv_rank,
+        "iv_atm":           iv_atm,
+        "iv_rank":          iv_rank_info["rank"],       # float | None
+        "iv_rank_source":   iv_rank_info["source"],
+        "iv_rank_n_days":   iv_rank_info["n_days"],
+        "iv_rank_index":    iv_rank_info["vol_index"],
+        "iv_hv_ratio":      iv_hv_ratio,
         "pc_oi":            pc_oi,
         "gex_total":        gex_sum,
         "has_chain":        has_chain,
@@ -215,17 +229,42 @@ for i, t in enumerate(tickers):
     progress.progress((i + 1) / len(tickers), text=f"Carregando {t}...")
 progress.empty()
 
+# Helpers de display pra IV Rank
+def _iv_rank_display(s: dict) -> tuple[float | None, str]:
+    """Retorna (valor_progressbar, legenda) para a coluna IV Rank.
+
+    valor_progressbar e None quando nao temos rank (ex: construindo historico) —
+    ProgressColumn renderiza vazio. A legenda vai numa coluna textual ao lado.
+    """
+    src = s.get("iv_rank_source")
+    rank = s.get("iv_rank")
+    n = s.get("iv_rank_n_days") or 0
+    iv = s.get("iv_atm")
+    iv_s = f"{iv*100:.0f}%" if iv else "—"
+    if src == "cboe":
+        idx = s.get("iv_rank_index") or "?"
+        return rank, f"{int(rank)} · {idx} · IV {iv_s}"
+    if src == "self_history":
+        return rank, f"{int(rank)} · N={n}d · IV {iv_s}"
+    if src == "insufficient":
+        return None, f"⏳ {n}/20d · IV {iv_s}"
+    # no_chain
+    return None, "—"
+
+
 # Monta dataframe
 rows: list[dict] = []
 for s in snapshots:
     if s.get("error"):
         rows.append({
             "Ticker": s["ticker"], "Preco": None, "Var 1d": None, "Var 5d": None,
-            "Canal %": None, "P/C OI": None, "IV Rank": None, "GEX (M)": None,
+            "Canal %": None, "P/C OI": None, "IV Rank": None, "IV Info": "—",
+            "IV/HV": None, "GEX (M)": None,
             "Score": -999, "Veredito": f"⚠ {s['error']}",
         })
         continue
     conv = oa.calculate_convergence_score(s["pillars"], direction=direction_key)
+    ivr_val, ivr_lbl = _iv_rank_display(s)
     rows.append({
         "Ticker":    s["ticker"],
         "Preco":     s["price"],
@@ -233,7 +272,9 @@ for s in snapshots:
         "Var 5d":    s.get("change_5d"),
         "Canal %":   s["channel_pos"] if s["channel_valid"] else None,
         "P/C OI":    s.get("pc_oi"),
-        "IV Rank":   s.get("iv_rank"),
+        "IV Rank":   ivr_val,
+        "IV Info":   ivr_lbl,
+        "IV/HV":     s.get("iv_hv_ratio"),
         "GEX (M)":   (s["gex_total"] / 1_000_000) if s.get("gex_total") is not None else None,
         "Score":     conv["score"],
         "Veredito":  f"{conv['emoji']} {conv['label']}  ({conv['bear_count']}B/{conv['bull_count']}L de {conv['total']})",
@@ -259,8 +300,17 @@ try:
                             format="%.0f%%", min_value=0, max_value=100),
             "P/C OI":   st.column_config.NumberColumn("P/C OI", format="%.2f"),
             "IV Rank":  st.column_config.ProgressColumn("IV Rank",
-                            help="Percentil 252d da HV20 — proxy de IV",
+                            help="Percentil do IV atual vs historico (CBOE vol index "
+                                 "quando disponivel; senao self-history diaria).",
                             format="%.0f", min_value=0, max_value=100),
+            "IV Info":  st.column_config.TextColumn("fonte",
+                            help="Fonte do IV Rank. 'CBOE' = indice oficial. "
+                                 "'N=Xd' = snapshots proprios acumulados. "
+                                 "'⏳ N/20d' = construindo historico."),
+            "IV/HV":    st.column_config.NumberColumn("IV/HV",
+                            help=">1.2 = opcoes caras vs realizado (vender); "
+                                 "<0.8 = opcoes baratas (comprar).",
+                            format="%.2f"),
             "GEX (M)":  st.column_config.NumberColumn("GEX (M)",
                             help="Gamma Exposure total em milhoes USD",
                             format="%.2f"),
@@ -408,8 +458,8 @@ else:
     if not channel["is_valid"]:
         st.info(channel["reason"])
 
-# Metricas focais
-m1, m2, m3, m4, m5 = st.columns(5)
+# Metricas focais — linha 1: preco/canal/momentum
+m1, m2, m3 = st.columns(3)
 with m1: metric_card("Preco", fmt_currency_usd(spot), focal_snap.get("change_1d"))
 with m2:
     cp = focal_snap["channel_pos"]
@@ -420,12 +470,41 @@ with m2:
     metric_card("Posicao no canal",
                 f"{cp:.0f}%" if focal_snap["channel_valid"] else "n/d", hint=hint)
 with m3:
+    metric_card("Variacao 20d", f"{focal_snap['change_20d']:+.1f}%")
+
+# Metricas focais — linha 2: trindade de volatilidade (IV Rank + IV atual + IV/HV)
+v1, v2, v3, v4 = st.columns(4)
+with v1:
+    rank = focal_snap.get("iv_rank")
+    src  = focal_snap.get("iv_rank_source")
+    nd   = focal_snap.get("iv_rank_n_days") or 0
+    if rank is not None:
+        hint = ""
+        if rank >= 70:   hint = "⚠ IV caro · considerar VENDER premio"
+        elif rank <= 30: hint = "⚠ IV barato · considerar COMPRAR premio"
+        source_tag = {"cboe": f"CBOE {focal_snap.get('iv_rank_index','')}",
+                      "self_history": f"self N={nd}d"}.get(src, src)
+        metric_card("IV Rank", f"{rank:.0f}", hint=f"{hint}  ·  {source_tag}".strip(" ·"))
+    else:
+        metric_card("IV Rank", "—",
+                    hint=f"⏳ construindo ({nd}/20d)" if src == "insufficient"
+                         else "sem chain")
+with v2:
+    iv = focal_snap.get("iv_atm")
+    metric_card("IV ATM (atual)", f"{iv*100:.1f}%" if iv else "n/d")
+with v3:
     hv = focal_snap.get("current_hv")
     metric_card("HV 20d", f"{hv*100:.1f}%" if hv else "n/d")
-with m4:
-    metric_card("IV Rank (proxy HV)", f"{focal_snap['iv_rank']:.0f}")
-with m5:
-    metric_card("Variacao 20d", f"{focal_snap['change_20d']:+.1f}%")
+with v4:
+    ratio = focal_snap.get("iv_hv_ratio")
+    if ratio is not None:
+        hint = ""
+        if ratio > 1.2:   hint = "opcoes caras vs realizado"
+        elif ratio < 0.8: hint = "opcoes baratas vs realizado"
+        else:             hint = "alinhado ao realizado"
+        metric_card("IV/HV", f"{ratio:.2f}", hint=hint)
+    else:
+        metric_card("IV/HV", "n/d")
 
 # Options flow focal
 chain = opt_svc.get_chain(focal, max_expiries=6)

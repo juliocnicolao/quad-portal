@@ -139,7 +139,7 @@ def calc_gex(chain: dict, spot: float, r: float = 0.045) -> pd.DataFrame:
     return pivot.sort_values("strike").reset_index(drop=True)
 
 
-# ── IV Rank (percentil rolling 252d de HV20) ─────────────────────────────────
+# ── Volatilidade historica (HV) ──────────────────────────────────────────────
 
 def calc_hv(closes: pd.Series, window: int = 20) -> pd.Series:
     """Volatilidade historica anualizada, rolling.
@@ -153,21 +153,45 @@ def calc_hv(closes: pd.Series, window: int = 20) -> pd.Series:
     return log_ret.rolling(window).std() * math.sqrt(TRADING_DAYS)
 
 
-def calc_iv_rank(closes: pd.Series, window: int = 20,
-                 lookback: int = 252) -> float:
-    """IV Rank aproximado: percentil da HV20 atual dentro do lookback de 1 ano.
+# ── IV Rank — percentil puro ─────────────────────────────────────────────────
+#
+# Convencao: IV Rank = % dos dias historicos em que a IV foi <= IV atual.
+# Ex.: rank=80 significa "IV hoje esta no 80o percentil — historicamente cara".
+#
+# Fonte do historical_series pode ser:
+#   (a) serie de vol index da CBOE (^VIX, ^VXN, etc) -> IV Rank real, imediato
+#   (b) snapshots proprios de ATM IV acumulados em data/iv_history.csv
+#
+# Minimo de 20 pontos para retornar numero. Senao, None (dado insuficiente).
 
-    Retorna 0-100. Em serie insuficiente (<20 pontos), retorna 50.0 (neutro).
+MIN_IV_HISTORY_POINTS = 20
+
+
+def calc_iv_rank(current_iv: float,
+                 historical_iv: pd.Series) -> float | None:
+    """IV Rank como percentil de current_iv em historical_iv.
+
+    Args:
+        current_iv: IV atual (decimal, ex.: 0.35 = 35%).
+        historical_iv: serie historica de IV (decimal).
+
+    Returns:
+        0-100 se len(historical) >= MIN_IV_HISTORY_POINTS, senao None.
     """
-    closes = closes.dropna() if closes is not None else pd.Series(dtype=float)
-    if len(closes) < window:
-        return 50.0
-    hv = calc_hv(closes, window=window).dropna()
-    if hv.empty:
-        return 50.0
-    recent = hv.tail(lookback)
-    current = float(hv.iloc[-1])
-    rank = float((recent <= current).sum()) / float(len(recent)) * 100.0
+    if current_iv is None or historical_iv is None:
+        return None
+    try:
+        cur = float(current_iv)
+    except (TypeError, ValueError):
+        return None
+    if cur <= 0:
+        return None
+    s = historical_iv.dropna() if hasattr(historical_iv, "dropna") \
+        else pd.Series(historical_iv)
+    s = s[s > 0]
+    if len(s) < MIN_IV_HISTORY_POINTS:
+        return None
+    rank = float((s <= cur).sum()) / float(len(s)) * 100.0
     return max(0.0, min(100.0, rank))
 
 
@@ -263,8 +287,9 @@ def classify_options_flow(pc_oi_ratio: float) -> Bias:
     return "NEUTRAL"
 
 
-def classify_iv_rank(iv_rank: float) -> IVLabel:
-    """IV Rank -> regime de volatilidade."""
+def classify_iv_rank(iv_rank: float | None) -> IVLabel:
+    """IV Rank -> regime de volatilidade. None -> N/A."""
+    if iv_rank is None: return "N/A"
     if iv_rank > 70: return "HIGH"
     if iv_rank < 30: return "LOW"
     return "MID"

@@ -92,27 +92,43 @@ def test_calc_gex_empty_chain():
     assert out.empty
 
 
-# ── IV Rank ──────────────────────────────────────────────────────────────────
+# ── IV Rank — percentil puro sobre serie de IV ─────────────────────────────
 
-def test_iv_rank_series_too_short():
-    short = pd.Series([100, 101, 99, 102, 98])
-    assert calc_iv_rank(short) == 50.0
-
-
-def test_iv_rank_high_when_last_is_peak():
-    rng = np.random.default_rng(42)
-    calm = 100 + np.cumsum(rng.normal(0, 0.3, 200))
-    wild = calm[-1] + np.cumsum(rng.normal(0, 3.0, 30))
-    series = pd.Series(np.concatenate([calm, wild]))
-    assert calc_iv_rank(series) > 70
+def test_iv_rank_none_when_history_too_short():
+    """<20 pontos -> None (insuficiente)."""
+    short = pd.Series([0.30] * 10)
+    assert calc_iv_rank(0.35, short) is None
 
 
-def test_iv_rank_low_when_last_is_quiet():
-    rng = np.random.default_rng(7)
-    wild = 100 + np.cumsum(rng.normal(0, 3.0, 200))
-    calm = wild[-1] + np.cumsum(rng.normal(0, 0.2, 30))
-    series = pd.Series(np.concatenate([wild, calm]))
-    assert calc_iv_rank(series) < 30
+def test_iv_rank_none_when_current_iv_invalid():
+    history = pd.Series([0.20 + i * 0.001 for i in range(100)])
+    assert calc_iv_rank(None, history) is None
+    assert calc_iv_rank(0, history) is None
+    assert calc_iv_rank(-0.1, history) is None
+
+
+def test_iv_rank_100_when_current_above_all_history():
+    history = pd.Series([0.15 + i * 0.001 for i in range(200)])  # 0.15..0.35
+    assert calc_iv_rank(0.40, history) == 100.0
+
+
+def test_iv_rank_0_when_current_below_all_history():
+    history = pd.Series([0.15 + i * 0.001 for i in range(200)])
+    assert calc_iv_rank(0.10, history) == 0.0
+
+
+def test_iv_rank_mid_value_is_around_50():
+    history = pd.Series([0.20 + i * 0.001 for i in range(200)])  # 0.20..0.40
+    rank = calc_iv_rank(0.30, history)
+    assert rank is not None
+    assert 45 <= rank <= 55
+
+
+def test_iv_rank_ignores_zero_values():
+    """Zeros no historico (falhas de coleta) nao contam."""
+    raw = [0.0] * 50 + [0.20 + i * 0.001 for i in range(100)]
+    rank = calc_iv_rank(0.30, pd.Series(raw))
+    assert rank is not None
 
 
 # ── Regression channel ──────────────────────────────────────────────────────
