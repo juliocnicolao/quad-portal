@@ -7,7 +7,6 @@ Todas as funcoes recebem primitivos ou DataFrames e retornam dict/ndarray/float.
 
 from __future__ import annotations
 
-import datetime as _dt
 import math
 from typing import Literal
 
@@ -16,14 +15,8 @@ import pandas as pd
 from scipy.stats import norm
 
 
-# ── Constantes de regime de IV (parametrizadas) ─────────────────────────────
-IV_CRASH_THRESHOLD = -0.20   # queda > 20% do spot
-IV_CRASH_LEVEL     = 0.65
-IV_FALL_THRESHOLD  = -0.10   # queda > 10%
-IV_FALL_LEVEL      = 0.55
-IV_RALLY_THRESHOLD =  0.10   # alta > 10%
-IV_RALLY_LEVEL     = 0.35
-IV_BASE_FALLBACK   = 0.50    # usado apenas se iv_avg indisponivel
+# IV base fallback: usado como proxy quando chain indisponivel/vazio.
+IV_BASE_FALLBACK = 0.50
 
 # Convencao de anualizacao
 TRADING_DAYS = 252
@@ -211,6 +204,7 @@ def regression_channel(df: pd.DataFrame, n_std: float = 2.0,
             "intercept": last_price,
             "residual_std": 0.0,
             "position_pct": 50.0,
+            "position_pct_raw": 50.0,
             "is_valid": False,
             "reason": f"Serie insuficiente para regressao ({len(closes)} pontos, minimo 20)",
         }
@@ -225,8 +219,8 @@ def regression_channel(df: pd.DataFrame, n_std: float = 2.0,
 
     reference_price = float(current_spot) if current_spot is not None else float(y[-1])
     band = upper[-1] - lower[-1]
-    pos = float((reference_price - lower[-1]) / band * 100) if band > 0 else 50.0
-    pos = max(0.0, min(100.0, pos))
+    pos_raw = float((reference_price - lower[-1]) / band * 100) if band > 0 else 50.0
+    pos = max(0.0, min(100.0, pos_raw))
 
     return {
         "upper": upper,
@@ -236,6 +230,7 @@ def regression_channel(df: pd.DataFrame, n_std: float = 2.0,
         "intercept": float(intercept),
         "residual_std": residual_std,
         "position_pct": pos,
+        "position_pct_raw": pos_raw,  # sem clamp — >100 ou <0 indica rompimento
         "is_valid": True,
         "reason": None,
     }
@@ -319,144 +314,173 @@ def scorecard(technical: Bias | None = None,
     }
 
 
-# ── Simulador de P&L ─────────────────────────────────────────────────────────
+# ── Convergence score (scanner) ──────────────────────────────────────────────
 
-def _iv_for_scenario(spot_ret: float, iv_base: float) -> float:
-    """IV a usar num cenario segundo regime por variacao do spot."""
-    if spot_ret <= IV_CRASH_THRESHOLD: return IV_CRASH_LEVEL
-    if spot_ret <= IV_FALL_THRESHOLD:  return IV_FALL_LEVEL
-    if spot_ret >= IV_RALLY_THRESHOLD: return IV_RALLY_LEVEL
-    return iv_base
-
-
-DEFAULT_CUSTOM_LABELS = ["Queda 20%", "Bear base", "Cauda"]
-
-
-# Presets de teses reais (puts compradas pelo usuario). Mapeia ticker -> lista
-# de dicts com strike, expiry (YYYY-MM-DD), contracts, premium_paid. Dias ate
-# vencimento sao calculados em tempo de chamada por default_positions().
-THESIS_PRESETS: dict[str, list[dict]] = {
-    "PBR": [
-        {"strike": 15.00, "expiry": "2027-01-15", "contracts": 10, "premium_paid": 0.75},
-        {"strike": 17.00, "expiry": "2027-01-15", "contracts": 10, "premium_paid": 1.40},
-        {"strike": 18.00, "expiry": "2027-02-19", "contracts": 10, "premium_paid": 2.00},
-    ],
+# Veredito: tupla (label curto, emoji, cor semantica da UI)
+_VERDICT_MAP = {
+    "STRONG_BEAR": ("BEAR FORTE", "🔴", "bearish"),
+    "BEAR":        ("BEAR",       "🔴", "bearish"),
+    "STRONG_BULL": ("BULL FORTE", "🟢", "bullish"),
+    "BULL":        ("BULL",       "🟢", "bullish"),
+    "MIXED_BEAR":  ("MISTO bear", "🟡", "mixed"),
+    "MIXED_BULL":  ("MISTO bull", "🟡", "mixed"),
+    "NEUTRAL":     ("NEUTRO",     "⚪", "neutral"),
 }
 
 
-def default_positions(ticker: str, spot: float, iv_base: float | None = None,
-                      today: _dt.date | None = None,
-                      r: float = 0.045) -> list[dict]:
-    """Retorna lista de posicoes default para exibir no simulador de P&L.
-
-    Se `ticker` tiver preset em THESIS_PRESETS, usa esses valores e calcula
-    `days` a partir de `today` (default: hoje). Caso contrario, devolve 1
-    posicao generica (ATM, 90 dias, premio aproximado via Black-Scholes
-    usando `iv_base` ou IV_BASE_FALLBACK).
+def calculate_convergence_score(pillars: list[dict],
+                                direction: Literal["bearish", "bullish"] = "bearish",
+                                ) -> dict:
+    """Sumariza scorecard em score assinado + veredito legivel para a tabela.
 
     Args:
-        ticker: simbolo (case-insensitive).
-        spot: preco atual.
-        iv_base: IV media da chain (usada no premio BS do fallback).
-        today: data de referencia para calcular dias ate vencimento.
-        r: taxa livre de risco (usada no premio BS do fallback).
+        pillars: lista [{name, bias}] conforme retornada por scorecard()['pillars'].
+                 `bias` pode ser 'BEARISH' | 'BULLISH' | 'NEUTRAL' ou None.
+        direction: direcao de interesse — score positivo favorece essa direcao.
 
     Returns:
-        Lista de dicts com chaves strike, days, contracts, premium_paid.
+        dict com:
+            - score (int): pilares_favor - pilares_contra (assinado p/ direction)
+            - bear_count / bull_count (int)
+            - total (int): pilares avaliados (nao-None, nao-NEUTRAL ignorado? nao —
+              total conta todos os pilares presentes, inclusive NEUTRAL)
+            - verdict (str): codigo em _VERDICT_MAP
+            - label (str), emoji (str), color (str)
     """
-    today = today or _dt.date.today()
-    key = (ticker or "").strip().upper()
+    valid = [p for p in pillars if p.get("bias") in ("BEARISH", "BULLISH", "NEUTRAL")]
+    total = len(valid)
+    bears = sum(1 for p in valid if p["bias"] == "BEARISH")
+    bulls = sum(1 for p in valid if p["bias"] == "BULLISH")
 
-    if key in THESIS_PRESETS:
-        out = []
-        for p in THESIS_PRESETS[key]:
-            try:
-                exp = _dt.datetime.strptime(p["expiry"], "%Y-%m-%d").date()
-                days = max((exp - today).days, 1)
-            except Exception:
-                days = 90
-            out.append({
-                "strike":       float(p["strike"]),
-                "days":         int(days),
-                "contracts":    int(p["contracts"]),
-                "premium_paid": float(p["premium_paid"]),
+    if direction == "bearish":
+        score = bears - bulls
+    else:
+        score = bulls - bears
+
+    # Classificacao
+    if total == 0:
+        verdict = "NEUTRAL"
+    else:
+        ratio_bear = bears / total
+        ratio_bull = bulls / total
+        if ratio_bear == 1.0 and total >= 3:   verdict = "STRONG_BEAR"
+        elif ratio_bear >= 0.75:               verdict = "STRONG_BEAR"
+        elif ratio_bull == 1.0 and total >= 3: verdict = "STRONG_BULL"
+        elif ratio_bull >= 0.75:               verdict = "STRONG_BULL"
+        elif bears > bulls and bears >= 2:     verdict = "BEAR"
+        elif bulls > bears and bulls >= 2:     verdict = "BULL"
+        elif bears > bulls:                    verdict = "MIXED_BEAR"
+        elif bulls > bears:                    verdict = "MIXED_BULL"
+        else:                                  verdict = "NEUTRAL"
+
+    label, emoji, color = _VERDICT_MAP[verdict]
+    return {
+        "score":      score,
+        "bear_count": bears,
+        "bull_count": bulls,
+        "total":      total,
+        "verdict":    verdict,
+        "label":      label,
+        "emoji":      emoji,
+        "color":      color,
+    }
+
+
+# ── Unusual activity detector ────────────────────────────────────────────────
+
+# Thresholds (em pontos percentuais de HV anualizada, exceto onde indicado)
+UA_VOL_SPIKE_THRESHOLD   = 10.0   # HV atual - HV 7d > 10 p.p.
+UA_VOL_CRUSH_THRESHOLD   = 10.0   # HV 7d - HV atual > 10 p.p.
+UA_CHANNEL_BREAK_PAD     = 5.0    # spot > upper + 5% da banda, ou < lower - 5%
+UA_PC_SHIFT_BEARISH_CUR  = 1.2
+UA_PC_SHIFT_BEARISH_PREV = 0.9
+UA_PC_SHIFT_BULLISH_CUR  = 0.7
+UA_PC_SHIFT_BULLISH_PREV = 1.0
+UA_VOLUME_SURGE_MULT     = 2.0    # volume hoje > 2x media 20d
+
+
+def detect_unusual_activity(snapshot: dict) -> list[dict]:
+    """Detecta sinais anomalos para 1 ticker. Funcao pura.
+
+    `snapshot` aceita (todas as chaves opcionais; flag so dispara se dados disponiveis):
+        - current_hv (float, decimal ex. 0.35 = 35%)
+        - hv_7d_ago  (float, decimal)
+        - channel_pos_raw (float): posicao no canal SEM clamp. >100 = acima da banda,
+          <0 = abaixo. Usado para detectar rompimento.
+        - pc_oi (float), pc_oi_7d_ago (float | None): P/C OI atual e 7d atras.
+          Se 7d_ago indisponivel, flags de shift nao disparam.
+        - current_volume (float), avg_volume_20d (float): volume do ativo underlying.
+
+    Returns:
+        Lista de {type, label, magnitude, severity} onde severity in
+        {'bearish','bullish','neutral'}.
+    """
+    flags: list[dict] = []
+
+    cur_hv = snapshot.get("current_hv")
+    hv7    = snapshot.get("hv_7d_ago")
+    if cur_hv is not None and hv7 is not None:
+        diff_pp = (float(cur_hv) - float(hv7)) * 100
+        if diff_pp > UA_VOL_SPIKE_THRESHOLD:
+            flags.append({
+                "type": "vol_spike",
+                "label": "Volatilidade disparou",
+                "magnitude": diff_pp,
+                "severity": "neutral",
             })
-        return out
+        elif -diff_pp > UA_VOL_CRUSH_THRESHOLD:
+            flags.append({
+                "type": "vol_crush",
+                "label": "Volatilidade colapsou",
+                "magnitude": -diff_pp,
+                "severity": "neutral",
+            })
 
-    # Fallback generico: 1 posicao ATM 90d com premio BS
-    iv = iv_base if (iv_base and iv_base > 0) else IV_BASE_FALLBACK
-    days = 90
-    premium = bs_put_price(spot=spot, strike=spot, days=days, iv=iv, r=r)
-    return [{
-        "strike":       float(spot),
-        "days":         days,
-        "contracts":    1,
-        "premium_paid": round(float(premium), 2),
-    }]
+    pos_raw = snapshot.get("channel_pos_raw")
+    if pos_raw is not None:
+        if pos_raw > 100 + UA_CHANNEL_BREAK_PAD:
+            flags.append({
+                "type": "channel_breakout_up",
+                "label": "Rompeu topo do canal",
+                "magnitude": float(pos_raw) - 100,
+                "severity": "bullish",
+            })
+        elif pos_raw < 0 - UA_CHANNEL_BREAK_PAD:
+            flags.append({
+                "type": "channel_breakdown",
+                "label": "Rompeu piso do canal",
+                "magnitude": abs(float(pos_raw)),
+                "severity": "bearish",
+            })
 
+    pc = snapshot.get("pc_oi")
+    pc_prev = snapshot.get("pc_oi_7d_ago")
+    if pc is not None and pc_prev is not None and pc > 0 and pc_prev > 0:
+        if pc >= UA_PC_SHIFT_BEARISH_CUR and pc_prev <= UA_PC_SHIFT_BEARISH_PREV:
+            flags.append({
+                "type": "pc_shift_bearish",
+                "label": "P/C virou bearish",
+                "magnitude": float(pc) - float(pc_prev),
+                "severity": "bearish",
+            })
+        elif pc <= UA_PC_SHIFT_BULLISH_CUR and pc_prev >= UA_PC_SHIFT_BULLISH_PREV:
+            flags.append({
+                "type": "pc_shift_bullish",
+                "label": "P/C virou bullish",
+                "magnitude": float(pc_prev) - float(pc),
+                "severity": "bullish",
+            })
 
-def pnl_scenarios(positions: list[dict], spot: float,
-                  custom_spots: list[float] | None = None,
-                  custom_labels: list[str] | None = None,
-                  iv_base: float | None = None,
-                  r: float = 0.045) -> pd.DataFrame:
-    """Simula P&L de posicoes de put em varios cenarios de spot.
+    vol    = snapshot.get("current_volume")
+    vol_avg = snapshot.get("avg_volume_20d")
+    if vol is not None and vol_avg is not None and vol_avg > 0:
+        ratio = float(vol) / float(vol_avg)
+        if ratio >= UA_VOLUME_SURGE_MULT:
+            flags.append({
+                "type": "volume_surge",
+                "label": "Volume anormal",
+                "magnitude": ratio,
+                "severity": "neutral",
+            })
 
-    Args:
-        positions: lista de dicts com chaves:
-            strike (float), days (int), contracts (int), premium_paid (float)
-        spot: preco atual de referencia.
-        custom_spots: ate 3 niveis adicionais de spot. Default: [spot*0.8, spot*0.7, spot*0.55]
-            (bear progressivo: Queda 20% -> Bear base -> Cauda).
-        custom_labels: rotulos para os 3 cenarios customizaveis.
-            Default: ["Queda 20%", "Bear base", "Cauda"].
-        iv_base: IV de base (de preferencia iv_avg do chain). Se None, usa IV_BASE_FALLBACK.
-        r: taxa livre de risco.
-
-    Returns:
-        DataFrame com 1 linha por cenario e colunas:
-            scenario, spot, iv_used, pnl_total, pnl_by_position (lista str para display)
-    """
-    if iv_base is None:
-        iv_base = IV_BASE_FALLBACK
-
-    fixed = [
-        ("Alta 20%",  spot * 1.20),
-        ("Alta 5%",   spot * 1.05),
-        ("Atual",     spot * 1.00),
-        ("Queda 10%", spot * 0.90),
-    ]
-    if custom_spots is None:
-        custom_spots = [spot * 0.80, spot * 0.70, spot * 0.55]
-    if custom_labels is None:
-        custom_labels = DEFAULT_CUSTOM_LABELS
-    for i, s in enumerate(custom_spots[:3]):
-        label = custom_labels[i] if i < len(custom_labels) else f"Custom {i+1}"
-        fixed.append((label, float(s)))
-
-    rows = []
-    for label, s in fixed:
-        spot_ret = (s - spot) / spot if spot else 0.0
-        iv_used  = _iv_for_scenario(spot_ret, iv_base)
-
-        total_pnl = 0.0
-        leg_details: list[str] = []
-        for i, pos in enumerate(positions, start=1):
-            strike   = float(pos["strike"])
-            days     = int(pos["days"])
-            ctrs     = int(pos["contracts"])
-            premium  = float(pos["premium_paid"])
-            price    = bs_put_price(s, strike, days, iv_used, r=r)
-            leg_pnl  = (price - premium) * 100.0 * ctrs
-            total_pnl += leg_pnl
-            leg_details.append(f"#{i} K${strike:g}: ${leg_pnl:,.0f}")
-
-        rows.append({
-            "scenario":         label,
-            "spot":             s,
-            "iv_used":          iv_used,
-            "pnl_total":        total_pnl,
-            "pnl_by_position":  " · ".join(leg_details),
-        })
-
-    return pd.DataFrame(rows)
+    return flags
