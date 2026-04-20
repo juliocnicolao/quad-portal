@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import datetime as _dt
+
 from services.options_analytics import (
     bs_put_price,
     bs_call_price,
@@ -18,6 +20,8 @@ from services.options_analytics import (
     classify_iv_rank,
     scorecard,
     pnl_scenarios,
+    default_positions,
+    DEFAULT_CUSTOM_LABELS,
 )
 
 
@@ -210,20 +214,32 @@ def test_pnl_scenarios_shape_and_labels():
         {"strike": 55, "days": 90, "contracts": 5,  "premium_paid": 3.0},
     ]
     df = pnl_scenarios(positions, spot=50.0, iv_base=0.40)
-    # 4 fixos + 3 custom default
+    # 4 fixos + 3 custom default (rotulos bear progressivo)
     assert len(df) == 7
     assert set(["scenario", "spot", "iv_used", "pnl_total"]).issubset(df.columns)
-    # Cenario Atual deve existir
-    assert (df["scenario"] == "Atual").any()
+    # Rotulos novos devem aparecer
+    scenarios = set(df["scenario"])
+    assert "Atual" in scenarios
+    for lbl in DEFAULT_CUSTOM_LABELS:
+        assert lbl in scenarios
 
 
 def test_pnl_scenarios_put_gains_on_crash():
-    """Puts OTM/ATM compradas ganham em crash de 45%."""
+    """Puts OTM/ATM compradas ganham em crash (cenario Cauda)."""
     positions = [{"strike": 50, "days": 60, "contracts": 10, "premium_paid": 1.5}]
     df = pnl_scenarios(positions, spot=50.0, iv_base=0.40)
     atual = df[df["scenario"] == "Atual"].iloc[0]["pnl_total"]
-    crash = df[df["scenario"] == "Custom 3"].iloc[0]["pnl_total"]  # spot*0.55
+    crash = df[df["scenario"] == "Cauda"].iloc[0]["pnl_total"]  # spot*0.55
     assert crash > atual
+
+
+def test_pnl_scenarios_single_position_mode():
+    """Modo sem puts reais (show_real_positions=False equivalente): 1 posicao."""
+    positions = [{"strike": 30, "days": 90, "contracts": 1, "premium_paid": 1.5}]
+    df = pnl_scenarios(positions, spot=30.0, iv_base=0.45)
+    assert len(df) == 7
+    # P&L por posicao deve ter somente 1 leg
+    assert all("#1" in s and "#2" not in s for s in df["pnl_by_position"])
 
 
 def test_pnl_uses_iv_base_when_no_regime():
@@ -232,3 +248,47 @@ def test_pnl_uses_iv_base_when_no_regime():
     df = pnl_scenarios(positions, spot=50.0, iv_base=0.33)
     row = df[df["scenario"] == "Atual"].iloc[0]
     assert abs(row["iv_used"] - 0.33) < 1e-9
+
+
+# ── default_positions / presets condicionais ────────────────────────────────
+
+def test_default_positions_pbr_preset():
+    """Ticker PBR deve materializar as 3 puts da tese com dias calculados."""
+    today = _dt.date(2026, 4, 19)
+    pos = default_positions("PBR", spot=14.0, iv_base=0.60, today=today)
+    assert len(pos) == 3
+    strikes = sorted(p["strike"] for p in pos)
+    assert strikes == [15.0, 17.0, 18.0]
+    # premios exatos da tese
+    premiums = sorted(p["premium_paid"] for p in pos)
+    assert premiums == [0.75, 1.40, 2.00]
+    # todos com 10 contratos
+    assert all(p["contracts"] == 10 for p in pos)
+    # dias ate vencimento: 2027-01-15 = 271, 2027-02-19 = 306
+    days = sorted(p["days"] for p in pos)
+    assert days == [271, 271, 306]
+
+
+def test_default_positions_generic_fallback():
+    """Ticker sem preset: 1 posicao ATM 90d com premio BS > 0."""
+    pos = default_positions("SPY", spot=500.0, iv_base=0.20)
+    assert len(pos) == 1
+    assert pos[0]["strike"] == 500.0
+    assert pos[0]["days"] == 90
+    assert pos[0]["contracts"] == 1
+    assert pos[0]["premium_paid"] > 0
+
+
+def test_default_positions_case_insensitive():
+    """pbr/PBR/Pbr devem todos bater no preset."""
+    today = _dt.date(2026, 4, 19)
+    for t in ("pbr", "PBR", "Pbr"):
+        assert len(default_positions(t, spot=14.0, today=today)) == 3
+
+
+def test_default_positions_non_preset_ticker_is_not_pbr():
+    """Ticker arbitrario nao deve herdar preset de PBR."""
+    pos = default_positions("AAPL", spot=200.0, iv_base=0.25)
+    assert len(pos) == 1  # apenas a posicao generica
+    # Nao deve conter strikes do preset PBR
+    assert pos[0]["strike"] == 200.0
