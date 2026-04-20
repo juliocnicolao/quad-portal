@@ -63,7 +63,7 @@ with st.spinner("Carregando dados do Brasil..."):
     ibov      = data.quote("^BVSP", br=True)
     ibov_hist = data.history("^BVSP", period="1y")
     ipca_hist = bcb.get_ipca_history(n=24)
-    quotes    = _get_br_quotes_cascade(TICKERS)
+    # quotes agora vem do fragment live (Top Movers / Liquidez)
 
 
 # ── Ibovespa hero ─────────────────────────────────────────────────────────────
@@ -140,54 +140,10 @@ else:
 st.markdown("---")
 
 
-# ── Top Movers ────────────────────────────────────────────────────────────────
-section_header("Top Movers", "Maiores altas e baixas do dia")
-
-valid = [
-    {**q, "ticker": t}   # força ticker "limpo" (PETR4, sem ".SA")
-    for t, q in quotes.items()
-    if not q.get("error") and q.get("change_pct") is not None
-]
-
-if valid:
-    df_movers = pd.DataFrame(valid).sort_values("change_pct", ascending=False)
-    # Altas: somente positivos ; Baixas: somente negativos
-    top5_up   = df_movers[df_movers["change_pct"] > 0].head(5)
-    top5_down = df_movers[df_movers["change_pct"] < 0].sort_values("change_pct").head(5)
-
-    # Escala simétrica comum — facilita comparação visual
-    max_abs = float(df_movers["change_pct"].abs().max())
-    pad     = max(max_abs * 0.15, 0.5)   # 15% de respiro ou 0.5pp mínimo
-    x_up    = [0, max_abs + pad]
-    x_down  = [-(max_abs + pad), 0]
-
-    col_up, col_down = st.columns(2)
-    with col_up:
-        if top5_up.empty:
-            st.info("Nenhum ativo em alta no momento.")
-        else:
-            fig = bar_movers(top5_up, "ticker", "change_pct", "▲ Maiores Altas", 240)
-            fig.update_xaxes(range=x_up)
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    with col_down:
-        if top5_down.empty:
-            st.info("Nenhum ativo em baixa no momento.")
-        else:
-            fig = bar_movers(top5_down, "ticker", "change_pct", "▼ Maiores Baixas", 240)
-            fig.update_xaxes(range=x_down)
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-else:
-    st.warning(
-        "Top Movers temporariamente indisponível — todas as fontes "
-        "(brapi · yfinance · stooq) falharam para os tickers acompanhados. "
-        "Tente atualizar em instantes."
-    )
-
-st.markdown("---")
-
-
-# ── Top Ativos por Liquidez ───────────────────────────────────────────────────
-section_header("Top Ativos — Liquidez", "Volume financeiro médio (3 meses)")
+# ── Top Movers + Top Ativos Liquidez (live fragment) ──────────────────────────
+# Fragment unico que renderiza as duas secoes que dependem de quotes intraday.
+# Re-executa a cada 60s sem reload da pagina. O cache dos quotes e invalidado
+# a cada tick pra garantir dados frescos.
 
 LIQUID = ["PETR4","VALE3","ITUB4","BBDC4","BBAS3",
           "B3SA3","ELET3","WEGE3","ABEV3","SUZB3"]
@@ -206,7 +162,6 @@ def _get_volume(tickers):
             closes = df["Close"].dropna()
             vols   = df["Volume"].dropna() if "Volume" in df.columns else None
             price  = float(closes.iloc[-1]) if len(closes) else 0
-            # volume medio financeiro ~ volume * preco medio
             if vols is not None and len(vols):
                 avg_vol = float(vols.mean())
                 avg_px  = float(closes.tail(len(vols)).mean())
@@ -218,20 +173,115 @@ def _get_volume(tickers):
             rows.append({"Ativo": t, "_price": 0, "_vol": 0})
     return rows
 
-rows = _get_volume(LIQUID)
-df_liq = pd.DataFrame(rows).sort_values("_vol", ascending=False)
-df_liq["Preço"]         = df_liq["_price"].map(lambda v: f"R$ {v:.2f}" if v else "—")
-df_liq["Vol. Médio 3m"] = df_liq["_vol"].map(
-    lambda v: f"R$ {v/1e9:.2f}B" if v >= 1e9
-    else f"R$ {v/1e6:.0f}M" if v >= 1e6
-    else f"R$ {v/1e3:.0f}K" if v else "—")
-df_liq["Var. Dia"]      = df_liq["Ativo"].map(
-    lambda t: fmt_pct(quotes[t]["change_pct"])
-    if t in quotes and not quotes[t].get("error")
-    and quotes[t].get("change_pct") is not None else "—")
 
-st.dataframe(df_liq[["Ativo","Preço","Var. Dia","Vol. Médio 3m"]],
-             use_container_width=True, hide_index=True)
+@st.fragment(run_every=60)
+def _render_live_quotes_block():
+    import datetime as _dt
+    # Invalida cache de quotes a cada tick (volume de 3m fica cacheado normal)
+    try:
+        _get_br_quotes_cascade.clear()
+    except Exception:
+        pass
+
+    quotes = _get_br_quotes_cascade(TICKERS)
+    _fetch_ts = _dt.datetime.now().strftime("%H:%M:%S")
+
+    # ── Top Movers ───────────────────────────────────────────────────────────
+    section_header("Top Movers", "Maiores altas e baixas do dia")
+
+    valid = [
+        {**q, "ticker": t}
+        for t, q in quotes.items()
+        if not q.get("error") and q.get("change_pct") is not None
+    ]
+
+    if valid:
+        df_movers = pd.DataFrame(valid).sort_values("change_pct", ascending=False)
+        top5_up   = df_movers[df_movers["change_pct"] > 0].head(5)
+        top5_down = df_movers[df_movers["change_pct"] < 0].sort_values("change_pct").head(5)
+
+        max_abs = float(df_movers["change_pct"].abs().max())
+        pad     = max(max_abs * 0.15, 0.5)
+        x_up    = [0, max_abs + pad]
+        x_down  = [-(max_abs + pad), 0]
+
+        col_up, col_down = st.columns(2)
+        with col_up:
+            if top5_up.empty:
+                st.info("Nenhum ativo em alta no momento.")
+            else:
+                fig = bar_movers(top5_up, "ticker", "change_pct", "▲ Maiores Altas", 240)
+                fig.update_xaxes(range=x_up)
+                st.plotly_chart(fig, use_container_width=True,
+                                config={"displayModeBar": False})
+        with col_down:
+            if top5_down.empty:
+                st.info("Nenhum ativo em baixa no momento.")
+            else:
+                fig = bar_movers(top5_down, "ticker", "change_pct", "▼ Maiores Baixas", 240)
+                fig.update_xaxes(range=x_down)
+                st.plotly_chart(fig, use_container_width=True,
+                                config={"displayModeBar": False})
+    else:
+        st.warning(
+            "Top Movers temporariamente indisponível — todas as fontes "
+            "(brapi · yfinance · stooq) falharam para os tickers acompanhados."
+        )
+
+    st.markdown("---")
+
+    # ── Top Ativos por Liquidez ──────────────────────────────────────────────
+    section_header("Top Ativos — Liquidez", "Volume financeiro médio (3 meses)")
+
+    rows = _get_volume(LIQUID)
+    df_liq = pd.DataFrame(rows).sort_values("_vol", ascending=False)
+    df_liq["Preço"]         = df_liq["_price"].map(
+        lambda v: f"R$ {v:.2f}" if v else "—")
+    df_liq["Vol. Médio 3m"] = df_liq["_vol"].map(
+        lambda v: f"R$ {v/1e9:.2f}B" if v >= 1e9
+        else f"R$ {v/1e6:.0f}M" if v >= 1e6
+        else f"R$ {v/1e3:.0f}K" if v else "—")
+    df_liq["Var. Dia"] = df_liq["Ativo"].map(
+        lambda t: fmt_pct(quotes[t]["change_pct"])
+        if t in quotes and not quotes[t].get("error")
+        and quotes[t].get("change_pct") is not None else "—")
+
+    st.dataframe(df_liq[["Ativo","Preço","Var. Dia","Vol. Médio 3m"]],
+                 use_container_width=True, hide_index=True)
+
+    # Countdown visivel
+    st.markdown(
+        f"""
+        <div style="margin-top:0.4rem;font-size:0.72rem;color:#777;">
+          ⟳ Auto-refresh ligado (60s · fragment) · último fetch {_fetch_ts}
+          <span id="br-live-countdown" style="color:#0a9;margin-left:0.5rem;"></span>
+        </div>
+        <script>
+        (function(){{
+          var startMs = Date.now();
+          var duration = 60000;
+          function tick(){{
+            var el = document.getElementById('br-live-countdown');
+            if (!el) return;
+            var rem = Math.max(0, duration - (Date.now() - startMs));
+            var m = Math.floor(rem/60000);
+            var s = Math.floor((rem%60000)/1000);
+            el.textContent = '· próxima em ' + m + ':' + (s<10?'0':'') + s;
+          }}
+          tick();
+          if (window._brLiveCountdownIv) clearInterval(window._brLiveCountdownIv);
+          window._brLiveCountdownIv = setInterval(tick, 1000);
+        }})();
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
+
+st.markdown("---")
+
+
+# Chama o fragment live (Top Movers + Top Ativos - Liquidez)
+_render_live_quotes_block()
 
 
 # ── Renda Fixa BR ────────────────────────────────────────────────────────────
