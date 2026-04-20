@@ -186,12 +186,24 @@ def calc_iv_rank(current_iv: float,
         return None
     if cur <= 0:
         return None
-    s = historical_iv.dropna() if hasattr(historical_iv, "dropna") \
-        else pd.Series(historical_iv)
-    s = s[s > 0]
-    if len(s) < MIN_IV_HISTORY_POINTS:
+    # Aceita Series ou qualquer iteravel; se vier DataFrame, pega 1a coluna.
+    try:
+        if isinstance(historical_iv, pd.DataFrame):
+            if historical_iv.shape[1] == 0:
+                return None
+            s = historical_iv.iloc[:, 0]
+        elif isinstance(historical_iv, pd.Series):
+            s = historical_iv
+        else:
+            s = pd.Series(historical_iv)
+        s = pd.to_numeric(s, errors="coerce").dropna()
+        s = s[s > 0]
+    except Exception:
         return None
-    rank = float((s <= cur).sum()) / float(len(s)) * 100.0
+    n = int(len(s))
+    if n < MIN_IV_HISTORY_POINTS:
+        return None
+    rank = float((s <= cur).sum()) / float(n) * 100.0
     return max(0.0, min(100.0, rank))
 
 

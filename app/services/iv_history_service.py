@@ -80,11 +80,22 @@ def _cboe_proxy_series(vol_index: str, period: str = "2y") -> pd.Series:
     """
     try:
         hist = data.history(vol_index, period=period)
-        if hist is None or hist.empty or "Close" not in hist.columns:
+        if hist is None or hist.empty:
             return pd.Series(dtype=float)
-        closes = hist["Close"].dropna()
+        # yfinance as vezes retorna MultiIndex nas colunas (ex.: ('Close', '^VIX')).
+        # Achatar para facilitar a extracao.
+        if isinstance(hist.columns, pd.MultiIndex):
+            hist = hist.copy()
+            hist.columns = hist.columns.get_level_values(0)
+        if "Close" not in hist.columns:
+            return pd.Series(dtype=float)
+        closes = hist["Close"]
+        # Se ainda veio DataFrame (colunas duplicadas), pega a primeira coluna
+        if isinstance(closes, pd.DataFrame):
+            closes = closes.iloc[:, 0]
+        closes = pd.Series(closes).dropna()
         # Indices CBOE em pontos -> decimal
-        return closes / 100.0
+        return closes.astype(float) / 100.0
     except Exception:
         return pd.Series(dtype=float)
 
