@@ -1,23 +1,26 @@
-"""Thesis Monitor — canal de regressao, options flow, P&L simulator, scorecard.
+"""Thesis Monitor — radar de convergencia cross-ativo (estilo Unusual Whales).
 
-Pagina para monitoramento de teses direcionais estruturadas. Combina analise
-tecnica (canal de regressao), fluxo de opcoes (P/C ratio, IV rank, GEX) e
-simulacao de P&L em multiplos cenarios. Scorecard agrega 3-4 pilares em
-veredito de convergencia.
+Ferramenta de DESCOBERTA de oportunidades, nao de tracking de posicao.
 
-**Ativos suportados:** qualquer ticker com dados no yfinance. Secoes de options
-flow aparecem apenas para ativos com option chain (PBR, EWZ, SPY, XLE, etc).
-Ativos sem chain (ex. BZ=F, BRL=X) mostram apenas analise tecnica + scorecard
-com 2 pilares.
+Fluxo:
+1. Usuario escolhe preset tematico (Default, Energy, Volatility, ...)
+2. Ve tabela ranqueada da watchlist ordenada por convergencia (bear ou bull)
+3. Ve flags de atividade anomala (vol spike, rompimento de canal, volume surge)
+4. Clica numa linha da tabela para analise aprofundada do ticker escolhido
 
-**Limitacoes conhecidas:**
-- Dados fim-de-dia (yfinance). Para intraday, usar a plataforma do broker.
-- IV Rank e proxy via HV252d, nao IV historica real.
-- GEX assume convencao padrao de posicionamento dealer (short calls / long
-  puts), pode divergir em eventos extremos.
+**Ativos suportados:** qualquer ticker com dados no yfinance. Ativos sem option
+chain entram na tabela com N/A nas colunas de options; scorecard usa 2 pilares
+(Tecnico + Momentum).
 
-Toda matematica pura esta em services/options_analytics.py; I/O em
-services/options_service.py. Esta pagina apenas renderiza.
+**Limitacoes:**
+- IV Rank e proxy via HV 252d (nao IV historica real).
+- Detector de unusual activity compara HV20 de hoje vs HV20 de 7 dias atras —
+  aproximacao ate persistirmos snapshots de IV real.
+- Custom watchlist vive apenas em st.session_state (sem persistencia de disco).
+  TODO: migrar para query param no futuro.
+
+Toda matematica pura esta em services/options_analytics.py; I/O de chain em
+services/options_service.py; catalogo de presets em services/watchlist_presets.py.
 """
 
 import sys, os
@@ -31,22 +34,51 @@ import streamlit as st
 st.set_page_config(page_title="Thesis Monitor | QUAD", page_icon="🎯",
                    layout="wide", initial_sidebar_state="expanded")
 
-from components.layout import inject_css, render_sidebar, render_footer, page_header
-from components.cards  import section_header, metric_card, error_card
-from services           import data_service as data
-from services           import options_service  as opt_svc
-from services           import options_analytics as oa
-from utils              import (fmt_currency_usd, fmt_pct, CACHE_TTL,
-                                COLOR_RED, COLOR_GREEN)
+from components.layout        import inject_css, render_sidebar, render_footer, page_header
+from components.cards         import section_header, metric_card, error_card
+from services                 import data_service       as data
+from services                 import options_service    as opt_svc
+from services                 import options_analytics  as oa
+from services.watchlist_presets import (WATCHLIST_PRESETS, get_preset,
+                                        get_preset_names)
+from utils                    import (fmt_currency_usd, fmt_pct, CACHE_TTL,
+                                      COLOR_RED, COLOR_GREEN)
 
 inject_css()
 render_sidebar()
-page_header("Thesis Monitor",
-            "Canal de regressao · Options flow · Simulador de P&L · Scorecard de convergencia")
+page_header("Thesis Monitor — Radar de Convergencia",
+            "Scanner cross-ativo por pilares tecnico/momentum/options · detector de atividade anomala")
 
 
-# ── Config ───────────────────────────────────────────────────────────────────
-DEFAULT_WATCHLIST = "PBR, EWZ, SPY, XLE, USO, VALE, BZ=F, BRL=X, ^VIX"
+# ── 1. Preset selector + watchlist ───────────────────────────────────────────
+section_header("Watchlist", "Preset tematico ou customizado")
+
+if "tm_preset" not in st.session_state:
+    st.session_state["tm_preset"] = "Default"
+if "tm_custom_watchlist" not in st.session_state:
+    st.session_state["tm_custom_watchlist"] = ", ".join(get_preset("Default"))
+
+wl_c1, wl_c2 = st.columns([1, 3])
+with wl_c1:
+    preset = st.selectbox("Preset:", options=get_preset_names(),
+                          index=get_preset_names().index(st.session_state["tm_preset"]),
+                          key="tm_preset_sel")
+    if preset != st.session_state["tm_preset"]:
+        st.session_state["tm_preset"] = preset
+        if preset != "Custom":
+            st.session_state["tm_custom_watchlist"] = ", ".join(get_preset(preset))
+        st.rerun()
+
+with wl_c2:
+    if preset == "Custom":
+        raw = st.text_area("Tickers customizados (separar por virgula):",
+                           value=st.session_state["tm_custom_watchlist"],
+                           height=70, key="tm_wl_raw")
+        st.session_state["tm_custom_watchlist"] = raw
+    else:
+        st.text_input("Tickers do preset:",
+                      value=", ".join(get_preset(preset)),
+                      disabled=True, key="tm_wl_display")
 
 
 def _parse_tickers(raw: str) -> list[str]:
@@ -58,143 +90,348 @@ def _parse_tickers(raw: str) -> list[str]:
     return out
 
 
-# ── 1. Watchlist multi-ativo ─────────────────────────────────────────────────
-section_header("Watchlist", "Ativos monitorados · preco, variacao diaria, 20 dias")
+if preset == "Custom":
+    tickers = _parse_tickers(st.session_state["tm_custom_watchlist"])
+else:
+    tickers = get_preset(preset)
 
-wl_key = "thesis_watchlist"
-if wl_key not in st.session_state:
-    st.session_state[wl_key] = DEFAULT_WATCHLIST
+if not tickers:
+    st.info("Watchlist vazia. Escolha um preset ou digite tickers em Custom.")
+    render_footer(); st.stop()
 
-raw = st.text_area("Tickers (separados por virgula):",
-                   value=st.session_state[wl_key], height=70, key="thesis_wl_input")
-if raw != st.session_state[wl_key]:
-    st.session_state[wl_key] = raw
+st.caption(f"📊 {len(tickers)} ativos: {' · '.join(tickers)}")
+st.markdown("---")
 
-tickers = _parse_tickers(st.session_state[wl_key])
 
-with st.spinner("Atualizando cotacoes..."):
-    wl_quotes = {t: data.quote(t) for t in tickers}
-    wl_hist   = {t: data.history(t, period="3mo") for t in tickers}
+# ── 2. Opportunity Scanner ───────────────────────────────────────────────────
+section_header("Opportunity Scanner",
+               "Ranking por convergencia de pilares · click na linha abre a analise focal")
 
-cols = st.columns(min(len(tickers), 5) or 1)
+sc_c1, sc_c2 = st.columns([1, 3])
+with sc_c1:
+    direction = st.radio("Direcao:", options=["🔴 Bearish", "🟢 Bullish"],
+                         horizontal=True, index=0, key="tm_direction")
+direction_key = "bearish" if direction == "🔴 Bearish" else "bullish"
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _ticker_snapshot(ticker: str) -> dict:
+    """Computa o snapshot agregado de 1 ticker. Cacheado 15min.
+
+    Chama data_service + options_service + options_analytics e retorna
+    dicionario de colunas ja prontas para a tabela do scanner.
+    """
+    snap: dict = {"ticker": ticker, "error": None}
+
+    q = data.quote(ticker)
+    if q.get("error") or q.get("price") is None:
+        snap["error"] = f"sem cotacao ({q.get('source','?')})"
+        return snap
+
+    price = float(q["price"])
+    snap["price"]     = price
+    snap["change_1d"] = q.get("change_pct")
+
+    hist = data.history(ticker, period="1y")
+    change_5d = None
+    current_hv = hv_7d_ago = None
+    iv_rank = 50.0
+    channel_pos = 50.0
+    channel_pos_raw = 50.0
+    channel_valid = False
+    cur_vol = vol_avg20 = None
+
+    if not hist.empty and "Close" in hist.columns:
+        closes = hist["Close"].dropna()
+        if len(closes) > 5:
+            change_5d = (closes.iloc[-1] / closes.iloc[-6] - 1) * 100
+        hv_series = oa.calc_hv(closes, window=20).dropna()
+        if not hv_series.empty:
+            current_hv = float(hv_series.iloc[-1])
+            if len(hv_series) > 7:
+                hv_7d_ago = float(hv_series.iloc[-8])
+        iv_rank = oa.calc_iv_rank(closes)
+        ch = oa.regression_channel(hist, n_std=2.0, current_spot=price)
+        channel_pos     = ch["position_pct"]
+        channel_pos_raw = ch["position_pct_raw"]
+        channel_valid   = ch["is_valid"]
+        if "Volume" in hist.columns:
+            vols = hist["Volume"].dropna()
+            if len(vols) > 20:
+                cur_vol   = float(vols.iloc[-1])
+                vol_avg20 = float(vols.tail(20).mean())
+
+    # Variacao 20d para momentum
+    change_20d = 0.0
+    if not hist.empty and "Close" in hist.columns:
+        closes = hist["Close"].dropna()
+        if len(closes) > 20:
+            change_20d = (closes.iloc[-1] / closes.iloc[-21] - 1) * 100
+
+    chain = opt_svc.get_chain(ticker, max_expiries=4)
+    has_chain = chain["available"] and not (chain["calls"].empty and chain["puts"].empty)
+    pc_oi  = chain["pc_oi"] if has_chain else None
+    gex_sum = None
+    if has_chain:
+        g = oa.calc_gex(chain, spot=price)
+        if not g.empty:
+            gex_sum = float(g["gex_total"].sum())
+
+    # Pilares — so adiciona os disponiveis
+    tech_bias = oa.classify_technical(channel_pos) if channel_valid else None
+    mom_bias  = oa.classify_momentum(change_20d)
+    of_bias   = oa.classify_options_flow(pc_oi) if pc_oi is not None else None
+    pillars = [
+        {"name": "Tecnico",      "bias": tech_bias},
+        {"name": "Momentum",     "bias": mom_bias},
+        {"name": "Options Flow", "bias": of_bias},
+    ]
+    pillars = [p for p in pillars if p["bias"] is not None]
+
+    snap.update({
+        "change_5d":        change_5d,
+        "change_20d":       change_20d,
+        "channel_pos":      channel_pos,
+        "channel_pos_raw":  channel_pos_raw,
+        "channel_valid":    channel_valid,
+        "current_hv":       current_hv,
+        "hv_7d_ago":        hv_7d_ago,
+        "iv_rank":          iv_rank,
+        "pc_oi":            pc_oi,
+        "gex_total":        gex_sum,
+        "has_chain":        has_chain,
+        "pillars":          pillars,
+        "current_volume":   cur_vol,
+        "avg_volume_20d":   vol_avg20,
+    })
+    return snap
+
+
+# Coleta snapshots (cacheado)
+progress = st.progress(0.0, text="Carregando watchlist...")
+snapshots: list[dict] = []
 for i, t in enumerate(tickers):
-    q = wl_quotes[t]; h = wl_hist[t]
-    with cols[i % len(cols)]:
-        if q.get("error") or q.get("price") is None:
-            error_card(t, tried=[q.get("source", "?")])
-            continue
-        price = q["price"]
-        change_1d = q.get("change_pct")
-        # variacao 20d
-        change_20d = None
-        if not h.empty and "Close" in h.columns:
-            closes = h["Close"].dropna()
-            if len(closes) > 20:
-                change_20d = (closes.iloc[-1] / closes.iloc[-21] - 1) * 100
-        hint = f"{t} · 20d: {change_20d:+.1f}%" if change_20d is not None else t
-        metric_card(t, fmt_currency_usd(price), change_1d, hint=hint)
+    snapshots.append(_ticker_snapshot(t))
+    progress.progress((i + 1) / len(tickers), text=f"Carregando {t}...")
+progress.empty()
+
+# Monta dataframe
+rows: list[dict] = []
+for s in snapshots:
+    if s.get("error"):
+        rows.append({
+            "Ticker": s["ticker"], "Preco": None, "Var 1d": None, "Var 5d": None,
+            "Canal %": None, "P/C OI": None, "IV Rank": None, "GEX (M)": None,
+            "Score": -999, "Veredito": f"⚠ {s['error']}",
+        })
+        continue
+    conv = oa.calculate_convergence_score(s["pillars"], direction=direction_key)
+    rows.append({
+        "Ticker":    s["ticker"],
+        "Preco":     s["price"],
+        "Var 1d":    s.get("change_1d"),
+        "Var 5d":    s.get("change_5d"),
+        "Canal %":   s["channel_pos"] if s["channel_valid"] else None,
+        "P/C OI":    s.get("pc_oi"),
+        "IV Rank":   s.get("iv_rank"),
+        "GEX (M)":   (s["gex_total"] / 1_000_000) if s.get("gex_total") is not None else None,
+        "Score":     conv["score"],
+        "Veredito":  f"{conv['emoji']} {conv['label']}  ({conv['bear_count']}B/{conv['bull_count']}L de {conv['total']})",
+    })
+
+scanner_df = pd.DataFrame(rows).sort_values("Score", ascending=False).reset_index(drop=True)
+
+# Render com selecao nativa
+try:
+    event = st.dataframe(
+        scanner_df,
+        on_select="rerun",
+        selection_mode="single-row",
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "Ticker":   st.column_config.TextColumn("Ticker", width="small"),
+            "Preco":    st.column_config.NumberColumn("Preco", format="$%.2f"),
+            "Var 1d":   st.column_config.NumberColumn("Var 1d", format="%.2f%%"),
+            "Var 5d":   st.column_config.NumberColumn("Var 5d", format="%.2f%%"),
+            "Canal %":  st.column_config.ProgressColumn("Canal %",
+                            help="Posicao no canal de regressao (0=piso, 100=topo)",
+                            format="%.0f%%", min_value=0, max_value=100),
+            "P/C OI":   st.column_config.NumberColumn("P/C OI", format="%.2f"),
+            "IV Rank":  st.column_config.ProgressColumn("IV Rank",
+                            help="Percentil 252d da HV20 — proxy de IV",
+                            format="%.0f", min_value=0, max_value=100),
+            "GEX (M)":  st.column_config.NumberColumn("GEX (M)",
+                            help="Gamma Exposure total em milhoes USD",
+                            format="%.2f"),
+            "Score":    st.column_config.NumberColumn("Conv",
+                            help="Convergence score: pilares_favor - pilares_contra",
+                            format="%d"),
+            "Veredito": st.column_config.TextColumn("Veredito", width="medium"),
+        },
+        key="tm_scanner_df",
+    )
+    selected_rows = event.selection.rows if hasattr(event, "selection") else []
+    table_api_ok = True
+except Exception as _e:
+    # Fallback para Streamlit antigo que nao suporta on_select
+    st.dataframe(scanner_df, hide_index=True, use_container_width=True)
+    selected_rows = []
+    table_api_ok = False
+    st.caption(f"⚠ API de selecao de linhas indisponivel ({_e}). Use o seletor abaixo.")
+
+# Seletor fallback (sempre visivel como backup)
+fallback_default = int(selected_rows[0]) if selected_rows else 0
+fallback_default = max(0, min(fallback_default, len(scanner_df) - 1))
+focal = st.selectbox(
+    "Ou selecione ticker para analise focal:",
+    options=list(scanner_df["Ticker"]),
+    index=fallback_default,
+    key="tm_focal_sel",
+)
+# Se usuario clicou na linha, usa a linha clicada
+if selected_rows:
+    focal = scanner_df.iloc[int(selected_rows[0])]["Ticker"]
 
 st.markdown("---")
 
 
-# ── 2. Ativo focal ───────────────────────────────────────────────────────────
-section_header("Analise focal", "Candlestick com canal de regressao +/- 2 sigma")
+# ── 3. Unusual Activity ──────────────────────────────────────────────────────
+section_header("Unusual Activity",
+               "Flags automaticas de mudancas de regime · HV proxy (7d)")
 
-fc1, fc2, fc3 = st.columns([2, 1, 1])
-with fc1:
-    focal = st.selectbox("Ticker focal:", options=tickers,
-                         index=0 if tickers else None,
-                         key="thesis_focal")
-with fc2:
-    period = st.selectbox("Periodo:", ["3mo", "6mo", "1y", "2y"], index=2)
-with fc3:
-    n_std = st.select_slider("Canal (sigmas):", options=[1.0, 1.5, 2.0, 2.5, 3.0], value=2.0)
+snap_by_ticker = {s["ticker"]: s for s in snapshots}
+flag_rows: list[dict] = []
+for t in tickers:
+    s = snap_by_ticker.get(t)
+    if not s or s.get("error"):
+        continue
+    flags = oa.detect_unusual_activity({
+        "current_hv":       s.get("current_hv"),
+        "hv_7d_ago":        s.get("hv_7d_ago"),
+        "channel_pos_raw":  s.get("channel_pos_raw"),
+        "pc_oi":            s.get("pc_oi"),
+        "pc_oi_7d_ago":     None,  # ainda sem persistencia de snapshot de chain
+        "current_volume":   s.get("current_volume"),
+        "avg_volume_20d":   s.get("avg_volume_20d"),
+    })
+    for f in flags:
+        flag_rows.append({"ticker": t, **f})
 
-if not focal:
-    st.info("Adicione ao menos um ticker na watchlist para analisar.")
+if not flag_rows:
+    st.caption("✓ Nenhuma atividade anomala detectada na watchlist atual.")
+else:
+    _sev_color = {
+        "bearish":  COLOR_RED,
+        "bullish":  COLOR_GREEN,
+        "neutral":  "#d4a017",  # amarelo/ambar para mudancas de vol
+    }
+    # Render em grid de 3 colunas
+    flags_cols = st.columns(3)
+    for i, f in enumerate(flag_rows):
+        col = _sev_color[f["severity"]]
+        mag = f["magnitude"]
+        if f["type"] == "volume_surge":
+            mag_str = f"{mag:.1f}x media"
+        elif f["type"] in ("vol_spike", "vol_crush"):
+            mag_str = f"{mag:+.1f} p.p. HV"
+        elif f["type"].startswith("channel"):
+            mag_str = f"{mag:+.1f} pts fora"
+        elif f["type"].startswith("pc_shift"):
+            mag_str = f"Δ {mag:+.2f}"
+        else:
+            mag_str = f"{mag:.2f}"
+        with flags_cols[i % 3]:
+            st.markdown(
+                f'<div style="background:#1A1A1A;border-left:3px solid {col};'
+                f'border-radius:6px;padding:0.7rem 0.9rem;margin-bottom:0.6rem;">'
+                f'<div style="font-size:0.7rem;color:#888;text-transform:uppercase;'
+                f'letter-spacing:0.08em;">{f["ticker"]}</div>'
+                f'<div style="font-size:0.92rem;color:#F0F0F0;font-weight:600;'
+                f'margin:0.15rem 0 0.15rem 0;">{f["label"]}</div>'
+                f'<div style="font-size:0.72rem;color:{col};font-weight:600;">'
+                f'{mag_str}</div></div>',
+                unsafe_allow_html=True,
+            )
+
+st.markdown("---")
+
+
+# ── 4. Analise focal do ticker selecionado ──────────────────────────────────
+section_header(f"Analise focal — {focal}",
+               "Candlestick + canal de regressao · Options flow · Scorecard detalhado")
+
+focal_snap = snap_by_ticker.get(focal)
+if not focal_snap or focal_snap.get("error"):
+    st.warning(f"Sem dados para {focal}. {focal_snap.get('error','') if focal_snap else ''}")
     render_footer(); st.stop()
 
-with st.spinner(f"Carregando {focal}..."):
-    hist = data.history(focal, period=period)
-    focal_q = data.quote(focal)
+with st.spinner(f"Carregando grafico de {focal}..."):
+    hist = data.history(focal, period="1y")
 
-spot = focal_q.get("price")
-if hist.empty or "Close" not in hist.columns or spot is None:
-    st.warning(f"Historico de {focal} indisponivel. Fontes testadas: "
-               f"{focal_q.get('source', '?')} · {hist.attrs.get('source', '?')}")
-    render_footer(); st.stop()
+spot = focal_snap["price"]
 
-# Canal + metricas
-channel = oa.regression_channel(hist, n_std=n_std, current_spot=spot)
-closes  = hist["Close"].dropna()
-hv20    = oa.calc_hv(closes, window=20).iloc[-1] if len(closes) > 20 else float("nan")
-iv_rank = oa.calc_iv_rank(closes)
-change_20d = (closes.iloc[-1] / closes.iloc[-21] - 1) * 100 if len(closes) > 20 else 0.0
-
-# Candlestick + canal
-fig = go.Figure()
-fig.add_trace(go.Candlestick(
-    x=hist.index, open=hist["Open"], high=hist["High"],
-    low=hist["Low"], close=hist["Close"], name=focal,
-    increasing_line_color=COLOR_GREEN, decreasing_line_color=COLOR_RED,
-))
-if channel["is_valid"]:
-    x_axis = hist.index[-len(channel["mean"]):]
-    fig.add_trace(go.Scatter(x=x_axis, y=channel["upper"], mode="lines",
-                             line=dict(color="#888", width=1, dash="dot"),
-                             name=f"+{n_std}σ"))
-    fig.add_trace(go.Scatter(x=x_axis, y=channel["mean"], mode="lines",
-                             line=dict(color="#aaa", width=1),
-                             name="Regressao"))
-    fig.add_trace(go.Scatter(x=x_axis, y=channel["lower"], mode="lines",
-                             line=dict(color="#888", width=1, dash="dot"),
-                             name=f"-{n_std}σ"))
-fig.update_layout(
-    template="plotly_dark", height=460, margin=dict(l=10, r=10, t=30, b=10),
-    paper_bgcolor="#0D0D0D", plot_bgcolor="#0D0D0D",
-    xaxis_rangeslider_visible=False, showlegend=True,
-    legend=dict(orientation="h", y=1.02, x=0),
-)
-st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-if not channel["is_valid"]:
-    st.info(channel["reason"])
+if hist.empty or "Close" not in hist.columns:
+    st.warning(f"Historico de {focal} indisponivel.")
+else:
+    channel = oa.regression_channel(hist, n_std=2.0, current_spot=spot)
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=hist.index, open=hist["Open"], high=hist["High"],
+        low=hist["Low"], close=hist["Close"], name=focal,
+        increasing_line_color=COLOR_GREEN, decreasing_line_color=COLOR_RED,
+    ))
+    if channel["is_valid"]:
+        x_axis = hist.index[-len(channel["mean"]):]
+        fig.add_trace(go.Scatter(x=x_axis, y=channel["upper"], mode="lines",
+                                 line=dict(color="#888", width=1, dash="dot"),
+                                 name="+2σ"))
+        fig.add_trace(go.Scatter(x=x_axis, y=channel["mean"], mode="lines",
+                                 line=dict(color="#aaa", width=1),
+                                 name="Regressao"))
+        fig.add_trace(go.Scatter(x=x_axis, y=channel["lower"], mode="lines",
+                                 line=dict(color="#888", width=1, dash="dot"),
+                                 name="-2σ"))
+    fig.update_layout(
+        template="plotly_dark", height=430, margin=dict(l=10, r=10, t=30, b=10),
+        paper_bgcolor="#0D0D0D", plot_bgcolor="#0D0D0D",
+        xaxis_rangeslider_visible=False, showlegend=True,
+        legend=dict(orientation="h", y=1.02, x=0),
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    if not channel["is_valid"]:
+        st.info(channel["reason"])
 
 # Metricas focais
 m1, m2, m3, m4, m5 = st.columns(5)
-with m1: metric_card("Preco", fmt_currency_usd(spot), focal_q.get("change_pct"))
+with m1: metric_card("Preco", fmt_currency_usd(spot), focal_snap.get("change_1d"))
 with m2:
-    pos_str = f"{channel['position_pct']:.0f}%" if channel["is_valid"] else "n/d"
+    cp = focal_snap["channel_pos"]
     hint = ""
-    if channel["is_valid"]:
-        if channel["position_pct"] > 85: hint = "⚠ topo do canal"
-        elif channel["position_pct"] < 15: hint = "⚠ piso do canal"
-    metric_card("Posicao no canal", pos_str, hint=hint)
+    if focal_snap["channel_valid"]:
+        if cp > 85: hint = "⚠ topo do canal"
+        elif cp < 15: hint = "⚠ piso do canal"
+    metric_card("Posicao no canal",
+                f"{cp:.0f}%" if focal_snap["channel_valid"] else "n/d", hint=hint)
 with m3:
-    metric_card("HV 20d", f"{hv20*100:.1f}%" if not np.isnan(hv20) else "n/d")
+    hv = focal_snap.get("current_hv")
+    metric_card("HV 20d", f"{hv*100:.1f}%" if hv else "n/d")
 with m4:
-    metric_card("IV Rank (proxy HV)", f"{iv_rank:.0f}")
+    metric_card("IV Rank (proxy HV)", f"{focal_snap['iv_rank']:.0f}")
 with m5:
-    metric_card("Variacao 20d", f"{change_20d:+.1f}%")
+    metric_card("Variacao 20d", f"{focal_snap['change_20d']:+.1f}%")
 
-st.markdown("---")
-
-
-# ── 3. Options flow (gate) ───────────────────────────────────────────────────
-with st.spinner(f"Buscando option chain de {focal}..."):
-    chain = opt_svc.get_chain(focal, max_expiries=6)
-
+# Options flow focal
+chain = opt_svc.get_chain(focal, max_expiries=6)
 has_chain = chain["available"] and not (chain["calls"].empty and chain["puts"].empty)
 
 if has_chain:
-    section_header("Options Flow",
-                   f"Agregado dos proximos {len(chain['expiries'])} vencimentos")
-
+    st.markdown("")
     o1, o2, o3, o4 = st.columns(4)
     with o1:
         pc = chain["pc_oi"]
-        hint = "bearish" if pc > 1.1 else ("bullish" if pc < 0.7 else "neutro")
-        metric_card("P/C ratio (OI)", f"{pc:.2f}", hint=hint)
+        metric_card("P/C ratio (OI)", f"{pc:.2f}",
+                    hint="bearish" if pc > 1.1 else ("bullish" if pc < 0.7 else "neutro"))
     with o2:
         metric_card("P/C ratio (Volume)", f"{chain['pc_vol']:.2f}")
     with o3:
@@ -202,7 +439,6 @@ if has_chain:
     with o4:
         metric_card("IV medio puts",  f"{chain['iv_avg_puts']*100:.1f}%")
 
-    # GEX por strike
     gex_df = oa.calc_gex(chain, spot=spot)
     if not gex_df.empty:
         lo, hi = spot * 0.5, spot * 1.5
@@ -210,15 +446,13 @@ if has_chain:
         if not g.empty:
             g["color"] = np.where(g["gex_total"] >= 0, COLOR_GREEN, COLOR_RED)
             fig_gex = go.Figure()
-            fig_gex.add_trace(go.Bar(
-                x=g["strike"], y=g["gex_total"],
-                marker_color=g["color"], name="GEX total",
-            ))
+            fig_gex.add_trace(go.Bar(x=g["strike"], y=g["gex_total"],
+                                     marker_color=g["color"], name="GEX total"))
             fig_gex.add_vline(x=spot, line_color="#F0F0F0", line_dash="dash",
                               annotation_text=f"spot ${spot:.2f}",
                               annotation_position="top")
             fig_gex.update_layout(
-                template="plotly_dark", height=340,
+                template="plotly_dark", height=320,
                 margin=dict(l=10, r=10, t=30, b=10),
                 paper_bgcolor="#0D0D0D", plot_bgcolor="#0D0D0D",
                 title="GEX por strike (±50% do spot)",
@@ -227,164 +461,52 @@ if has_chain:
             )
             st.plotly_chart(fig_gex, use_container_width=True,
                             config={"displayModeBar": False})
-
             gex_total = float(g["gex_total"].sum())
             if gex_total >= 0:
-                st.caption("**GEX total positivo** — dealers tendem a estabilizar o preco "
-                           "(vendem na alta, compram na queda).")
+                st.caption("**GEX total positivo** — dealers tendem a estabilizar o preco.")
             else:
-                st.caption("**GEX total negativo** — dealers tendem a amplificar movimentos "
-                           "(compram na alta, vendem na queda). Maior potencial de volatilidade.")
-
-    st.markdown("---")
-
+                st.caption("**GEX total negativo** — dealers tendem a amplificar movimentos.")
 else:
     st.info(f"Options chain nao disponivel para {focal}. "
-            "Secoes de Options Flow e Simulador P&L ocultas.")
+            "Scorecard usa apenas Tecnico + Momentum.")
 
+# Scorecard detalhado do focal
+pillars = focal_snap["pillars"]
+iv_label = oa.classify_iv_rank(focal_snap["iv_rank"])
 
-# ── 4. Simulador P&L (so com chain) ──────────────────────────────────────────
-if has_chain:
-    section_header("Simulador P&L — puts compradas",
-                   "Tese bearish: 4 cenarios fixos + 3 bear progressivos customizaveis.")
-
-    iv_base = chain["iv_avg"] or oa.IV_BASE_FALLBACK
-    preset = oa.default_positions(focal, spot=spot, iv_base=iv_base)
-
-    # Toggle — modo exploracao vs tracking operacional
-    show_real = st.toggle(
-        "💼 Tenho puts reais nesse ativo",
-        value=st.session_state.get(f"tm_real_{focal}", False),
-        help="Ative para configurar suas posicoes reais na sidebar e ver P&L calibrado. "
-             "Desligado: mostra 1 put ATM teorica (exploracao).",
-        key=f"tm_real_{focal}",
-    )
-
-    if show_real:
-        with st.sidebar:
-            st.markdown("---")
-            st.markdown(f"**Thesis Monitor — puts em {focal}**")
-            default_n = len(preset) if preset else 1
-            n_legs = st.number_input("N de posicoes", min_value=1, max_value=6,
-                                     value=int(default_n), step=1, key="tm_nlegs")
-
-            positions: list[dict] = []
-            for i in range(int(n_legs)):
-                st.caption(f"**Put #{i+1}**")
-                # Preset do ticker se existir, senao generico
-                if i < len(preset):
-                    strike_default   = preset[i]["strike"]
-                    days_default     = preset[i]["days"]
-                    contracts_default = preset[i]["contracts"]
-                    prem_default     = preset[i]["premium_paid"]
-                else:
-                    strike_default   = round(spot * (0.9 - 0.05 * i), 2)
-                    days_default     = 60 + 30 * i
-                    contracts_default = 10
-                    prem_default     = round(spot * 0.02, 2)
-
-                k = st.number_input(f"Strike #{i+1}", value=float(strike_default),
-                                    min_value=0.01, step=0.5, key=f"tm_k_{i}")
-                d = st.number_input(f"Dias ate venc. #{i+1}", value=int(days_default),
-                                    min_value=1, step=1, key=f"tm_d_{i}")
-                c = st.number_input(f"Contratos #{i+1}", value=int(contracts_default),
-                                    min_value=1, step=1, key=f"tm_c_{i}")
-                p = st.number_input(
-                    f"Premio pago #{i+1} (USD/acao)",
-                    value=float(prem_default), min_value=0.0, step=0.05,
-                    help="Ajuste para o premio efetivamente pago na sua corretora.",
-                    key=f"tm_p_{i}",
-                )
-                positions.append({"strike": k, "days": d, "contracts": c, "premium_paid": p})
-
-            st.caption("Cenarios bear customizaveis (spot):")
-            c1 = st.number_input("Queda 20%", value=round(spot * 0.80, 2),
-                                 min_value=0.01, step=0.5, key="tm_cs1")
-            c2 = st.number_input("Bear base", value=round(spot * 0.70, 2),
-                                 min_value=0.01, step=0.5, key="tm_cs2")
-            c3 = st.number_input("Cauda",     value=round(spot * 0.55, 2),
-                                 min_value=0.01, step=0.5, key="tm_cs3")
-            custom_spots = [c1, c2, c3]
-    else:
-        # Modo exploracao: 1 put ATM teorica, sem inputs na sidebar
-        positions    = preset if len(preset) == 1 else \
-                       oa.default_positions("__generic__", spot=spot, iv_base=iv_base)
-        custom_spots = [spot * 0.80, spot * 0.70, spot * 0.55]
-        st.caption("ℹ Modo exploracao: 1 put ATM teorica. "
-                   "Ative o toggle acima para configurar suas puts reais.")
-
-    pnl_df = oa.pnl_scenarios(positions, spot=spot,
-                              custom_spots=custom_spots, iv_base=iv_base)
-
-    # Formatar para display
-    disp = pnl_df.copy()
-    disp["spot"]      = disp["spot"].map(lambda v: f"${v:,.2f}")
-    disp["iv_used"]   = disp["iv_used"].map(lambda v: f"{v*100:.0f}%")
-    disp["pnl_total"] = disp["pnl_total"].map(lambda v: f"${v:,.0f}")
-    disp = disp.rename(columns={
-        "scenario": "Cenario", "spot": "Spot", "iv_used": "IV usada",
-        "pnl_total": "P&L total", "pnl_by_position": "Por posicao",
-    })
-    st.dataframe(disp, use_container_width=True, hide_index=True)
-    st.caption(f"IV base (iv_avg do chain): **{iv_base*100:.0f}%** · "
-               "ajustes automaticos: crash -20% → 65%, queda -10% → 55%, rally +10% → 35%")
-
-    st.markdown("---")
-
-
-# ── 5. Scorecard de convergencia ─────────────────────────────────────────────
-section_header("Scorecard de convergencia",
-               "Pilares do ativo focal · veredito quando >= 75% convergem")
-
-tech_bias = oa.classify_technical(channel["position_pct"]) if channel["is_valid"] else None
-mom_bias  = oa.classify_momentum(change_20d)
-of_bias   = oa.classify_options_flow(chain["pc_oi"]) if has_chain else None
-iv_label  = oa.classify_iv_rank(iv_rank)
-
-sc = oa.scorecard(technical=tech_bias, momentum=mom_bias,
-                  options_flow=of_bias, iv_rank_label=iv_label)
-
-# Render chips
-_colors = {"BEARISH": COLOR_RED, "BULLISH": COLOR_GREEN, "NEUTRAL": "#888"}
+_chip_col = {"BEARISH": COLOR_RED, "BULLISH": COLOR_GREEN, "NEUTRAL": "#888"}
 chip_html = ""
-for p in sc["pillars"]:
-    col = _colors[p["bias"]]
-    chip_html += (f'<span style="display:inline-block;background:{col};'
-                  f'color:#fff;font-size:0.72rem;font-weight:700;'
-                  f'padding:4px 10px;border-radius:4px;margin-right:6px;'
-                  f'letter-spacing:0.05em;">{p["name"]}: {p["bias"]}</span>')
-# IV context
-_iv_color = {"HIGH": "#C8232B", "LOW": "#26a269", "MID": "#888", "N/A": "#555"}[sc["iv_context"]]
-chip_html += (f'<span style="display:inline-block;background:{_iv_color};'
-              f'color:#fff;font-size:0.72rem;font-weight:700;'
-              f'padding:4px 10px;border-radius:4px;'
-              f'letter-spacing:0.05em;">IV Rank: {sc["iv_context"]}</span>')
-
-st.markdown(f'<div style="margin:0.5rem 0 1rem 0;">{chip_html}</div>',
+for p in pillars:
+    c = _chip_col[p["bias"]]
+    chip_html += (f'<span style="display:inline-block;background:{c};color:#fff;'
+                  f'font-size:0.72rem;font-weight:700;padding:4px 10px;'
+                  f'border-radius:4px;margin-right:6px;letter-spacing:0.05em;">'
+                  f'{p["name"]}: {p["bias"]}</span>')
+_iv_col = {"HIGH": COLOR_RED, "LOW": COLOR_GREEN, "MID": "#888", "N/A": "#555"}[iv_label]
+chip_html += (f'<span style="display:inline-block;background:{_iv_col};color:#fff;'
+              f'font-size:0.72rem;font-weight:700;padding:4px 10px;border-radius:4px;'
+              f'letter-spacing:0.05em;">IV Rank: {iv_label}</span>')
+st.markdown(f'<div style="margin:0.6rem 0 0.2rem 0;">{chip_html}</div>',
             unsafe_allow_html=True)
 
-# Veredito
-if sc["verdict"] == "STRONG_BEARISH":
+conv = oa.calculate_convergence_score(pillars, direction=direction_key)
+if conv["verdict"] == "STRONG_BEAR":
     st.markdown(
         f'<div style="background:#2a1818;border-left:4px solid {COLOR_RED};'
-        f'padding:0.9rem 1rem;border-radius:4px;">'
-        f'<b style="color:{COLOR_RED};">⚠ CONVERGENCIA BEARISH FORTE</b> — '
-        f'{sc["bearish_pct"]:.0f}% dos pilares avaliados apontam bearish.</div>',
+        f'padding:0.9rem 1rem;border-radius:4px;margin-top:0.5rem;">'
+        f'<b style="color:{COLOR_RED};">{conv["emoji"]} {conv["label"]}</b> — '
+        f'{conv["bear_count"]}/{conv["total"]} pilares bearish.</div>',
         unsafe_allow_html=True)
-elif sc["verdict"] == "STRONG_BULLISH":
+elif conv["verdict"] == "STRONG_BULL":
     st.markdown(
         f'<div style="background:#182a18;border-left:4px solid {COLOR_GREEN};'
-        f'padding:0.9rem 1rem;border-radius:4px;">'
-        f'<b style="color:{COLOR_GREEN};">✓ CONVERGENCIA BULLISH FORTE</b> — '
-        f'{sc["bullish_pct"]:.0f}% dos pilares avaliados apontam bullish.</div>',
+        f'padding:0.9rem 1rem;border-radius:4px;margin-top:0.5rem;">'
+        f'<b style="color:{COLOR_GREEN};">{conv["emoji"]} {conv["label"]}</b> — '
+        f'{conv["bull_count"]}/{conv["total"]} pilares bullish.</div>',
         unsafe_allow_html=True)
 else:
-    st.caption(f"Sinais mistos · bearish {sc['bearish_pct']:.0f}% · "
-               f"bullish {sc['bullish_pct']:.0f}% · sem convergencia forte.")
-
-if not has_chain:
-    st.caption("ℹ Scorecard calculado com 2 pilares (Tecnico + Momentum) — "
-               "options chain indisponivel.")
+    st.caption(f"{conv['emoji']} {conv['label']} — "
+               f"{conv['bear_count']}B / {conv['bull_count']}L de {conv['total']} pilares.")
 
 
 render_footer()
