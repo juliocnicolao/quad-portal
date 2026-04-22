@@ -178,9 +178,13 @@ def render_footer():
     )
 
 
-def page_header(title: str, subtitle: str):
+def page_header(title: str, subtitle: str = ""):
+    sub_html = (
+        f'<div style="font-size:0.8rem;color:#666;margin-bottom:1.5rem;">{subtitle}</div>'
+        if subtitle else '<div style="margin-bottom:1.2rem;"></div>'
+    )
     st.markdown(
         f'<div style="font-size:1.6rem;font-weight:700;color:#F0F0F0;margin-bottom:0.1rem;">{title}</div>'
-        f'<div style="font-size:0.8rem;color:#666;margin-bottom:1.5rem;">{subtitle}</div>',
+        f'{sub_html}',
         unsafe_allow_html=True,
     )

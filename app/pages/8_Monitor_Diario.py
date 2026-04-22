@@ -35,8 +35,7 @@ from storage.db        import apply_migrations, get_conn                        
 
 inject_css()
 render_sidebar()
-page_header("Monitor Diário",
-            "Calendário econômico · Options flow · Truflation — coleta 2x/dia")
+page_header("Monitor Diário")
 
 # Garante schema (idempotente, barato)
 try:
@@ -102,14 +101,7 @@ def _age_badge(iso_ts: str | None, stale_hours: float = 13.0) -> str:
 last = _last_run()
 c1, c2, c3 = st.columns([3, 2, 1])
 with c1:
-    if last:
-        st.markdown(
-            f"**Última execução** · run `#{last['id']}` · "
-            f"{last['ts_started']} → {last['ts_finished'] or '—'} · "
-            f"status: **{last['status']}**",
-            unsafe_allow_html=True,
-        )
-    else:
+    if not last:
         st.info("Nenhuma execução registrada ainda. Rode o scheduler "
                 "(`python -m scheduler.runner`) para popular o banco.")
 
@@ -231,8 +223,6 @@ tab_cal, tab_uw, tab_tru = st.tabs([
 
 with tab_cal:
     st.subheader("Calendário econômico (US + BR)")
-    st.caption("Fonte: investing.com · próximos 14 dias · últimos 30 dias. "
-               "Surpresa = Actual − Forecast (verde = surpresa positiva para a moeda).")
 
     import pandas as pd
 
