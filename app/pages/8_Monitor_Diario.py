@@ -478,9 +478,6 @@ with tab_uw:
 
 with tab_tru:
     st.subheader("Truflation US CPI Inflation Index")
-    st.caption("Índice diário (YoY%) da Truflation — TruCPI-US. "
-               "Dados com ~5 dias de delay (plano free). "
-               "Fonte: truflation.com/marketplace/us-inflation-rate")
 
     # Le historico do DB (populado pelo scheduler ou pela run_now abaixo).
     import pandas as pd
