@@ -85,9 +85,65 @@ def inject_css():
     st.markdown(_CSS, unsafe_allow_html=True)
 
 
+def _monitor_health_badge() -> str | None:
+    """Retorna HTML de um badge se o scheduler falhou ou está stale.
+
+    Aparece em todas as páginas via sidebar pra chamar atenção mesmo sem
+    o usuário visitar o Monitor Diário. None → tudo saudável, omite badge.
+    """
+    try:
+        from datetime import datetime, timezone
+        from storage.db import get_conn
+        with get_conn() as _c:
+            row = _c.execute(
+                "SELECT id, ts_finished, status FROM scheduler_runs "
+                "ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        if not row:
+            return None  # sem runs ainda — Monitor mostra hint proprio
+        ts = row["ts_finished"]
+        status = row["status"]
+
+        # Idade do último run (em horas)
+        age_h = None
+        if ts:
+            t = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            age_h = (datetime.now(timezone.utc) - t).total_seconds() / 3600
+
+        # Reglas de alerta:
+        #  failed              -> vermelho
+        #  partial             -> amarelo
+        #  idade > 25h         -> amarelo (1 ciclo perdido)
+        #  idade > 48h         -> vermelho (2 ciclos perdidos)
+        if status == "failed":
+            color, label = "#c33", f"Scheduler falhou (run #{row['id']})"
+        elif age_h is not None and age_h > 48:
+            color, label = "#c33", f"Scheduler parado há {age_h:.0f}h"
+        elif status == "partial":
+            color, label = "#c84", f"Último run parcial (#{row['id']})"
+        elif age_h is not None and age_h > 25:
+            color, label = "#c84", f"Scheduler stale ({age_h:.0f}h)"
+        else:
+            return None
+
+        return (
+            f'<a href="/Monitor_Diario" target="_self" style="text-decoration:none;">'
+            f'<div style="background:{color};color:#fff;padding:6px 10px;'
+            f'border-radius:6px;font-size:0.75rem;margin-bottom:8px;'
+            f'display:flex;align-items:center;gap:6px;">'
+            f'<span>⚠</span><span>{label}</span></div></a>'
+        )
+    except Exception:
+        return None  # silencioso — alerta nunca deve quebrar layout
+
+
 def render_sidebar():
     with st.sidebar:
         st.markdown(_BRAND, unsafe_allow_html=True)
+        # Alerta global de saúde do scheduler (se houver)
+        _alert = _monitor_health_badge()
+        if _alert:
+            st.markdown(_alert, unsafe_allow_html=True)
         st.markdown("**Navegação**")
         st.page_link("main.py",                label="Visão Geral",  icon="📊")
         st.page_link("pages/1_Brasil.py",      label="Brasil",       icon="🌎")

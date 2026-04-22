@@ -130,16 +130,38 @@ with c2:
     st.markdown(" ".join(badges), unsafe_allow_html=True)
 
 with c3:
-    if st.button("▶ Rodar agora", key="hdr_run_now",
-                 help="Dispara o scheduler runner (calendar + uw + truflation)"):
-        from scheduler.runner import run as _run_all, SECTIONS as _ALL_SECTIONS
-        with st.spinner("Rodando todas as seções — pode levar 1–2 min…"):
-            _res = _run_all(list(_ALL_SECTIONS))
-        st.success(
-            f"run #{_res['run_id']} · status: {_res['status']} · "
-            + " · ".join(f"{k}={v}" for k, v in _res["sections"].items())
+    # Async: dispara o runner em subprocess pra não travar a UI.
+    # Status fica visível via badges + expander de freshness que
+    # atualizam no próximo rerun.
+    def _spawn_runner_bg() -> int:
+        import subprocess, sys as _sys
+        # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP no Windows → UI não espera.
+        creationflags = 0
+        if _sys.platform == "win32":
+            creationflags = 0x00000008 | 0x00000200  # DETACHED | NEW_GROUP
+        log_path = _REPO_ROOT / "logs" / "scheduler_run.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # redireciona stdout/stderr pro mesmo log do scheduler
+        fh = open(log_path, "ab")
+        p = subprocess.Popen(
+            [_sys.executable, "-m", "scheduler.runner"],
+            cwd=str(_REPO_ROOT),
+            stdout=fh, stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=creationflags,
         )
-        st.rerun()
+        return p.pid
+
+    if st.button("▶ Rodar agora", key="hdr_run_now",
+                 help="Dispara scheduler runner em background (UI não trava)"):
+        try:
+            pid = _spawn_runner_bg()
+            st.toast(f"Runner disparado (PID {pid}). Acompanhe pelos badges.",
+                     icon="🚀")
+            st.session_state["_uw_last_spawn_ts"] = datetime.now(timezone.utc).isoformat()
+        except Exception as _ex:
+            st.error(f"Falha ao disparar runner: {_ex}")
 
 # Freshness por seção: idade do último ts_collected de cada tabela
 with get_conn() as _conn:
@@ -318,7 +340,10 @@ with tab_uw:
     st.subheader("Options flow via Unusual Whales")
     st.caption("PBR · TLT · SPY · EWZ — daily stats (volume, OI, IV rank, "
                "net premium) + aggregate GEX 1Y. Fonte: unusualwhales.com "
-               "sem login (API pública do frontend).")
+               "sem login (API pública do frontend). "
+               "⚠ O endpoint `/market_state_all` retorna apenas os últimos "
+               "5 dias por call — a série histórica cresce a cada run 2×/dia "
+               "e vira útil estatisticamente após ~30 dias de acúmulo no DB.")
 
     import pandas as pd
     import plotly.graph_objects as go
