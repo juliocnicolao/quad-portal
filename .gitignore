@@ -1,5 +1,24 @@
 # Secrets — nunca subir para o GitHub
 .streamlit/secrets.toml
+.env
+.env.local
+
+# SQLite (Monitor Diario)
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# Playwright browsers cache
+.playwright/
+playwright-report/
+
+# Recon outputs (raw endpoint dumps)
+recon/*.json
+recon/*.har
+
+# Logs
+logs/
 
 # Python
 __pycache__/

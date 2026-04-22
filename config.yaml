@@ -1,0 +1,46 @@
+# Monitor Diario — configuracao estatica
+# Editavel sem re-deploy (lido a cada execucao do collector/Streamlit).
+
+# ── Horarios de coleta (BRT) ───────────────────────────────────────────────
+# Task Scheduler do Windows dispara scheduler/runner.py nestes horarios.
+schedule:
+  timezone: America/Sao_Paulo
+  runs:
+    - "08:30"
+    - "18:30"
+
+# ── Secao 1: Calendario Economico ──────────────────────────────────────────
+calendar:
+  countries:  [US, BR]
+  impact:     [high]           # alto impacto apenas
+  events_watchlist:
+    US: [CPI, PCE, PPI, "Non-Farm Payrolls", FOMC, GDP, "Retail Sales",
+         "Initial Jobless Claims", "ISM Manufacturing PMI",
+         "ISM Services PMI", "Fed Chair Powell Speaks"]
+    BR: [IPCA, Copom, GDP, "IBC-Br", "Focus Market Readout"]
+
+# ── Secao 2: Options Flow (Unusual Whales, sem login) ──────────────────────
+options_flow:
+  tickers: [PBR, TLT, SPY, EWZ]
+  uw_base_url: "https://unusualwhales.com/stock/{ticker}/overview?chart=options-volume"
+  # Rate limit: 1 request por ticker por execucao (2x/dia x 4 = 8/dia).
+  request_delay_seconds: 3
+  playwright:
+    headless: true
+    timeout_ms: 30000
+
+# ── Secao 3: Truflation ────────────────────────────────────────────────────
+truflation:
+  # Endpoint definitivo descoberto na Fase 2.
+  api_url: "https://api.truflation.com/v1/index/us-cpi"   # placeholder
+  history_days: 60
+
+# ── Storage ────────────────────────────────────────────────────────────────
+storage:
+  db_path: "data/monitor_diario.db"
+
+# ── Logging ────────────────────────────────────────────────────────────────
+logging:
+  dir: logs
+  rotation: daily
+  retention_days: 14
