@@ -251,10 +251,130 @@ with tab_cal:
 
 with tab_uw:
     st.subheader("Options flow via Unusual Whales")
-    st.caption("Fase 4 — PBR, TLT, SPY, EWZ. Net Premium histórico (30d) + "
-               "Daily GEX por strike. Scraping sem login; SQLite acumula "
-               "histórico próprio para virar série longa em 2-3 meses.")
-    st.info("🚧 Placeholder — implementação na Fase 4 (após recon de endpoints).")
+    st.caption("PBR · TLT · SPY · EWZ — daily stats (volume, OI, IV rank, "
+               "net premium) + aggregate GEX 1Y. Fonte: unusualwhales.com "
+               "sem login (API pública do frontend).")
+
+    import pandas as pd
+    import plotly.graph_objects as go
+
+    with get_conn() as _conn:
+        _flow_rows = _conn.execute(
+            "SELECT ticker, date, close, pct_change, pc_ratio, volume, "
+            "       c_vol, p_vol, vol_30d_ratio, total_oi, ivr, net_prem, "
+            "       total_prem, ts_collected "
+            "FROM options_flow_daily ORDER BY date DESC, ticker ASC"
+        ).fetchall()
+        _gex_rows = _conn.execute(
+            "SELECT ticker, date, close, call_gex, put_gex, call_delta, put_delta "
+            "FROM gex_daily ORDER BY date ASC, ticker ASC"
+        ).fetchall()
+
+    if not _flow_rows and not _gex_rows:
+        st.warning("Ainda não há dados de Unusual Whales no banco.")
+        if st.button("🔄 Coletar agora", key="uw_first_run"):
+            from collectors import unusual_whales as _uw
+            with st.spinner("Coletando options flow + GEX (4 tickers)..."):
+                _res = _uw.collect()
+            status = _res.get("status")
+            if status == "ok":
+                st.success(
+                    f"OK — {_res['flow_upserted']} linhas de flow e "
+                    f"{_res['gex_upserted']} linhas de GEX."
+                )
+                st.rerun()
+            else:
+                st.error(f"Falha ({status}): {_res.get('failed') or _res.get('error')}")
+    else:
+        df_flow = pd.DataFrame([dict(r) for r in _flow_rows])
+        df_gex  = pd.DataFrame([dict(r) for r in _gex_rows])
+
+        # Cards por ticker (último dia disponível por ticker)
+        latest_per_ticker = (df_flow.sort_values(["ticker", "date"])
+                                   .groupby("ticker").tail(1)
+                                   .set_index("ticker"))
+
+        ts_coll = df_flow["ts_collected"].max()
+        st.markdown(
+            f"**Última coleta:** {_age_badge(ts_coll)}",
+            unsafe_allow_html=True,
+        )
+
+        cols = st.columns(len(latest_per_ticker))
+        for col, (tk, row) in zip(cols, latest_per_ticker.iterrows()):
+            with col:
+                st.markdown(f"#### {tk}")
+                close = row.get("close")
+                pct = row.get("pct_change")
+                st.metric(
+                    "Close",
+                    f"{close:.2f}" if close is not None else "—",
+                    delta=(f"{pct*100:+.2f}%" if pct is not None else None),
+                )
+                ivr = row.get("ivr")
+                st.caption(f"IV Rank: **{ivr:.1f}**" if ivr is not None else "IV Rank: —")
+                pcr = row.get("pc_ratio")
+                st.caption(f"P/C Vol: **{pcr:.2f}**" if pcr is not None else "P/C Vol: —")
+                np_ = row.get("net_prem")
+                if np_ is not None:
+                    sign = "🟢" if np_ > 0 else "🔴"
+                    st.caption(f"Net prem: {sign} **${np_/1e6:+.2f}M**")
+
+        st.markdown("---")
+
+        # Tabela completa — últimos registros de cada ticker
+        st.markdown("**Histórico diário (SQLite vai acumulando a cada run)**")
+        show = df_flow[["date", "ticker", "close", "pct_change", "pc_ratio",
+                         "volume", "ivr", "net_prem", "total_prem"]].copy()
+        show["pct_change"] = (show["pct_change"] * 100).round(2)
+        show["pc_ratio"]   = show["pc_ratio"].round(2)
+        show["ivr"]        = show["ivr"].round(1)
+        show["net_prem"]   = (show["net_prem"] / 1e6).round(2)
+        show["total_prem"] = (show["total_prem"] / 1e6).round(2)
+        show = show.rename(columns={
+            "pct_change": "%Δ", "pc_ratio": "P/C",
+            "ivr": "IVR", "net_prem": "NetPrem ($M)",
+            "total_prem": "TotPrem ($M)",
+        })
+        st.dataframe(show, use_container_width=True, hide_index=True)
+
+        # GEX chart — call_gex vs put_gex por ticker (últimos 120 dias)
+        if not df_gex.empty:
+            st.markdown("**GEX diário agregado (últimos 120 dias)**")
+            tickers_avail = sorted(df_gex["ticker"].unique())
+            sel_tk = st.selectbox("Ticker", tickers_avail, key="uw_gex_ticker")
+            sub = (df_gex[df_gex["ticker"] == sel_tk]
+                   .sort_values("date").tail(120))
+            sub["date"] = pd.to_datetime(sub["date"])
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=sub["date"], y=sub["call_gex"],
+                                  name="Call GEX", marker_color="#2ca02c"))
+            fig.add_trace(go.Bar(x=sub["date"], y=sub["put_gex"],
+                                  name="Put GEX",  marker_color="#d62728"))
+            fig.add_trace(go.Scatter(x=sub["date"], y=sub["close"],
+                                      name="Close", yaxis="y2",
+                                      line=dict(color="#1f77b4", width=2)))
+            fig.update_layout(
+                barmode="relative", height=380,
+                margin=dict(t=20, b=40, l=20, r=20),
+                yaxis=dict(title="GEX"),
+                yaxis2=dict(title="Close", overlaying="y", side="right"),
+                legend=dict(orientation="h", y=1.08),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        if st.button("🔄 Re-coletar agora", key="uw_rerun"):
+            from collectors import unusual_whales as _uw
+            with st.spinner("Coletando..."):
+                _res = _uw.collect()
+            if _res.get("status") in ("ok", "partial"):
+                st.success(
+                    f"{_res['status']} — flow {_res['flow_upserted']}, "
+                    f"gex {_res['gex_upserted']}"
+                )
+                st.rerun()
+            else:
+                st.error(f"Falha: {_res.get('failed') or _res.get('error')}")
 
 with tab_tru:
     st.subheader("Truflation US CPI Inflation Index")
