@@ -31,9 +31,13 @@ options_flow:
 
 # ── Secao 3: Truflation ────────────────────────────────────────────────────
 truflation:
-  # Endpoint definitivo descoberto na Fase 2.
-  api_url: "https://api.truflation.com/v1/index/us-cpi"   # placeholder
+  # Endpoint publico descoberto via recon (Fase 2) - sem auth, retorna 1Y
+  # de pontos diarios do TruCPI-US em formato { labels, datasets:[{data}] }.
+  # Dados vem com ~5 dias de delay (plano free da Truflation).
+  api_url: "https://truflation.com/api/compare-indexes/us-inflation-rate?mode=index&dataVersion=44"
+  slug: "us-inflation-rate"
   history_days: 60
+  request_timeout_s: 30
 
 # ── Storage ────────────────────────────────────────────────────────────────
 storage:

@@ -13,9 +13,10 @@ data/*.db-shm
 .playwright/
 playwright-report/
 
-# Recon outputs (raw endpoint dumps)
+# Recon outputs (raw endpoint dumps — big, transient)
 recon/*.json
 recon/*.har
+recon/*.html
 
 # Logs
 logs/

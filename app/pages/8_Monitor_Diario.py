@@ -156,10 +156,101 @@ with tab_uw:
     st.info("🚧 Placeholder — implementação na Fase 4 (após recon de endpoints).")
 
 with tab_tru:
-    st.subheader("Truflation US Inflation Rate")
-    st.caption("Fase 2 — valor diário do índice Truflation, delta vs. último "
-               "CPI oficial, evolução 60 dias.")
-    st.info("🚧 Placeholder — implementação na Fase 2 (primeiro collector real).")
+    st.subheader("Truflation US CPI Inflation Index")
+    st.caption("Índice diário (YoY%) da Truflation — TruCPI-US. "
+               "Dados com ~5 dias de delay (plano free). "
+               "Fonte: truflation.com/marketplace/us-inflation-rate")
+
+    # Le historico do DB (populado pelo scheduler ou pela run_now abaixo).
+    import pandas as pd
+    import plotly.graph_objects as go
+
+    with get_conn() as _conn:
+        _rows = _conn.execute(
+            "SELECT date, value, change_1d, change_7d, change_30d, ts_collected "
+            "FROM truflation_history ORDER BY date ASC"
+        ).fetchall()
+
+    if not _rows:
+        st.warning("Ainda não há dados de Truflation no banco.")
+        col_run1, col_run2 = st.columns([1, 5])
+        with col_run1:
+            if st.button("🔄 Coletar agora", key="tru_first_run"):
+                from collectors import truflation as _t
+                with st.spinner("Buscando dados da Truflation..."):
+                    _res = _t.collect()
+                if _res.get("status") == "ok":
+                    st.success(f"OK — {_res['rows_upserted']} pontos carregados.")
+                    st.rerun()
+                else:
+                    st.error(f"Falha: {_res.get('error', 'erro desconhecido')}")
+    else:
+        df = pd.DataFrame([dict(r) for r in _rows])
+        df["date"] = pd.to_datetime(df["date"])
+
+        latest = df.iloc[-1]
+        ts_coll = latest["ts_collected"]
+
+        # Cards: valor atual + deltas
+        c_val, c_1d, c_7d, c_30d, c_age = st.columns([2, 1, 1, 1, 2])
+        c_val.metric("Valor atual (YoY %)",
+                     f"{latest['value']:.2f}%",
+                     delta=(f"{latest['change_1d']:+.3f} pp"
+                            if latest["change_1d"] is not None else None))
+        c_1d.metric("Δ 1d",
+                    f"{latest['change_1d']:+.3f}" if latest["change_1d"] is not None else "—")
+        c_7d.metric("Δ 7d",
+                    f"{latest['change_7d']:+.3f}" if latest["change_7d"] is not None else "—")
+        c_30d.metric("Δ 30d",
+                     f"{latest['change_30d']:+.3f}" if latest["change_30d"] is not None else "—")
+        with c_age:
+            st.markdown("**Última coleta**")
+            st.markdown(_age_badge(ts_coll), unsafe_allow_html=True)
+            st.caption(f"ref: {latest['date'].strftime('%Y-%m-%d')}")
+
+        # Chart 60d
+        import yaml as _yaml
+        _cfg = _yaml.safe_load((_REPO_ROOT / "config.yaml").read_text(encoding="utf-8"))
+        _days = int(_cfg.get("truflation", {}).get("history_days", 60))
+
+        df_plot = df.tail(_days).copy()
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df_plot["date"], y=df_plot["value"],
+            mode="lines", name="TruCPI-US (YoY %)",
+            line=dict(color="#2a9df4", width=2),
+            fill="tozeroy", fillcolor="rgba(42,157,244,0.15)",
+        ))
+        fig.update_layout(
+            height=360,
+            margin=dict(l=10, r=10, t=30, b=10),
+            hovermode="x unified",
+            yaxis_title="YoY %",
+            xaxis_title=None,
+            showlegend=False,
+            template="plotly_dark",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Expander com dados brutos
+        with st.expander("Dados brutos (últimos 30 dias)"):
+            st.dataframe(
+                df.tail(30)[["date", "value", "change_1d", "change_7d", "change_30d"]]
+                    .sort_values("date", ascending=False),
+                hide_index=True, use_container_width=True,
+            )
+
+        # Botao re-coletar manual
+        with st.container():
+            if st.button("🔄 Re-coletar agora", key="tru_rerun"):
+                from collectors import truflation as _t
+                with st.spinner("Atualizando Truflation..."):
+                    _res = _t.collect()
+                if _res.get("status") == "ok":
+                    st.success(f"Atualizado — {_res['rows_upserted']} pontos.")
+                    st.rerun()
+                else:
+                    st.error(f"Falha: {_res.get('error', 'erro desconhecido')}")
 
 
 render_footer()
