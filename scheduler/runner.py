@@ -28,7 +28,7 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
-from storage.db import apply_migrations, get_conn  # noqa: E402
+from storage.db import apply_migrations, get_conn, is_remote  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -144,6 +144,12 @@ def _backup_db(retention_days: int = 14) -> Path | None:
     """
     from datetime import date, timedelta
     import yaml as _yaml
+
+    # Remote (Turso) nao suporta VACUUM INTO; backup eh responsabilidade do
+    # provider (Turso faz snapshots gerenciados). No-op aqui.
+    if is_remote():
+        _log.info("db backup skipped: remote mode (Turso manages snapshots)")
+        return None
 
     cfg_path = _REPO_ROOT / "config.yaml"
     db_rel = "data/monitor_diario.db"

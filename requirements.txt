@@ -17,3 +17,4 @@ python-dotenv>=1.0
 httpx>=0.27
 beautifulsoup4>=4.12
 playwright>=1.47        # headless para Unusual Whales (sem login)
+libsql-experimental>=0.0.40  # Turso (libSQL) remote driver — drop-in sqlite3

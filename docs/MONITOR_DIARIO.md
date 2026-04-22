@@ -88,6 +88,64 @@ Get-ScheduledTask     -TaskName 'QUAD-MonitorDiario'   # estado
 
 ---
 
+## Storage: local vs remoto (Turso)
+
+O `storage/db.py` detecta automaticamente o modo:
+
+- **Local** (default, dev): SQLite em `data/monitor_diario.db`. Usado quando
+  nenhuma env var Turso está setada.
+- **Remoto** (produção / Streamlit Cloud): libSQL via [Turso](https://turso.tech).
+  Ativado quando `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` existem (env ou
+  `.streamlit/secrets.toml`).
+
+**Por que Turso?** Streamlit Cloud roda em containers Linux efêmeros — não
+compartilha filesystem com a máquina Windows local. Turso é um SQLite remoto
+(libSQL) com tier grátis de 9GB, driver drop-in (`libsql-experimental`) e
+snapshots gerenciados.
+
+### Setup Turso (one-time)
+
+```bash
+# 1. instalar CLI
+curl -sSfL https://get.tur.so/install.sh | bash
+
+# 2. login + criar DB
+turso auth login
+turso db create quad-monitor
+
+# 3. pegar URL + token
+turso db show quad-monitor --url
+turso db tokens create quad-monitor
+```
+
+Configurar localmente (`.streamlit/secrets.toml` — gitignored):
+
+```toml
+TURSO_DATABASE_URL = "libsql://quad-monitor-<org>.turso.io"
+TURSO_AUTH_TOKEN   = "eyJ..."
+```
+
+E em **Streamlit Cloud** → app settings → Secrets → colar as mesmas duas
+linhas. O scheduler local (Windows Task Scheduler) também lê as env vars e
+grava direto no Turso — assim o Cloud lê os mesmos dados.
+
+### Migração inicial de dados local → Turso
+
+```bash
+# dump do SQLite local
+sqlite3 data/monitor_diario.db .dump > dump.sql
+
+# import via Turso CLI
+turso db shell quad-monitor < dump.sql
+```
+
+### Backup em modo remoto
+
+`_backup_db()` é no-op quando `is_remote()`: Turso gerencia snapshots
+(ver dashboard). A retention/backup local só se aplica em dev.
+
+---
+
 ## Configuração (`config.yaml`)
 
 Principais chaves editáveis sem re-deploy:
