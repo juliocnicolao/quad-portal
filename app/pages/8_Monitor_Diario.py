@@ -451,6 +451,8 @@ with tab_uw:
                 legend=dict(orientation="h", y=1.08),
                 template="plotly_dark",
             )
+            # Esconde gaps de fim de semana (barras ficam sequenciais)
+            fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
             st.plotly_chart(fig, use_container_width=True)
 
         if st.button("🔄 Re-coletar agora", key="uw_rerun"):
