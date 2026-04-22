@@ -279,10 +279,15 @@ with tab_cal:
             return f"{s}{unit or ''}" if unit == "%" else f"{s}"
 
         def _color_surprise(v):
-            if v is None or pd.isna(v):
+            # v pode chegar como float OU string formatada ("+0.05", "—").
+            if v is None or (isinstance(v, float) and pd.isna(v)) or v == "—":
                 return ""
-            if v > 0.05:  return "color: #0a9; font-weight: 600;"
-            if v < -0.05: return "color: #c33; font-weight: 600;"
+            try:
+                n = float(v) if not isinstance(v, (int, float)) else v
+            except (TypeError, ValueError):
+                return ""
+            if n > 0.05:  return "color: #0a9; font-weight: 600;"
+            if n < -0.05: return "color: #c33; font-weight: 600;"
             return "color: #888;"
 
         st.markdown("### 📅 Próximos eventos (14 dias)")
