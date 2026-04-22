@@ -10,14 +10,46 @@ schedule:
     - "18:30"
 
 # ── Secao 1: Calendario Economico ──────────────────────────────────────────
+# Fonte: investing.com — SSR __NEXT_DATA__ de cada event page.
+# Cada evento ja tem slug+event_id descobertos via recon (Fase 3).
+# Adicionar/remover: visite investing.com/economic-calendar/, abra o evento,
+# pegue o slug do URL (ex: /economic-calendar/cpi-733 → slug=cpi-733).
 calendar:
-  countries:  [US, BR]
-  impact:     [high]           # alto impacto apenas
-  events_watchlist:
-    US: [CPI, PCE, PPI, "Non-Farm Payrolls", FOMC, GDP, "Retail Sales",
-         "Initial Jobless Claims", "ISM Manufacturing PMI",
-         "ISM Services PMI", "Fed Chair Powell Speaks"]
-    BR: [IPCA, Copom, GDP, "IBC-Br", "Focus Market Readout"]
+  # Janela de coleta: upsert occurrences neste intervalo (em dias rel. a hoje).
+  lookback_days:  30     # historico pra ter contexto do "Ultimos 7d"
+  lookahead_days: 14     # agenda dos proximos 14 dias
+  request_delay_s: 1.5   # pausa entre requests (gentil com o investing)
+  request_timeout_s: 30
+
+  events:
+    US:
+      # inflacao
+      - { name: "CPI YoY",              slug: "cpi-733" }
+      - { name: "CPI MoM",              slug: "cpi-69" }
+      - { name: "Core CPI MoM",         slug: "core-cpi-56" }
+      - { name: "PCE Price Index YoY",  slug: "pce-price-index-906" }
+      - { name: "Core PCE YoY",         slug: "core-pce-price-index-905" }
+      - { name: "Core PCE MoM",         slug: "core-pce-price-index-61" }
+      - { name: "PPI MoM",              slug: "ppi-238" }
+      # emprego
+      - { name: "Nonfarm Payrolls",     slug: "nonfarm-payrolls-227" }
+      - { name: "ADP Nonfarm",          slug: "adp-nonfarm-employment-change-1" }
+      - { name: "Initial Jobless Claims", slug: "initial-jobless-claims-294" }
+      - { name: "JOLTS Job Openings",   slug: "jolts-job-openings-1057" }
+      # monetaria + atividade
+      - { name: "Fed Interest Rate Decision", slug: "interest-rate-decision-168" }
+      - { name: "ISM Manufacturing PMI", slug: "ism-manufacturing-pmi-173" }
+      - { name: "Retail Sales MoM",     slug: "retail-sales-256" }
+      - { name: "GDP QoQ",              slug: "gdp-375" }
+      - { name: "Atlanta Fed GDPNow",   slug: "atlanta-fed-gdpnow-2260" }
+    BR:
+      - { name: "IPCA YoY",             slug: "brazilian-cpi-410" }
+      - { name: "IPCA MoM",             slug: "brazilian-cpi-1165" }
+      - { name: "Copom Rate Decision",  slug: "brazilian-interest-rate-decision-415" }
+      - { name: "GDP YoY",              slug: "brazilian-gdp-413" }
+      - { name: "CAGED Net Payroll",    slug: "brazilian-caged-net-payroll-jobs-1523" }
+      - { name: "Retail Sales MoM",     slug: "brazilian-retail-sales-861" }
+      - { name: "Unemployment Rate",    slug: "brazilian-unemployment-rate-411" }
 
 # ── Secao 2: Options Flow (Unusual Whales, sem login) ──────────────────────
 options_flow:

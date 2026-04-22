@@ -143,10 +143,111 @@ tab_cal, tab_uw, tab_tru = st.tabs([
 ])
 
 with tab_cal:
-    st.subheader("Calendário econômico (US + BR, alto impacto)")
-    st.caption("Fase 3 — CPI, PCE, Payroll, FOMC, IPCA, Copom, etc. "
-               "com previsão, anterior, resultado e surpresa.")
-    st.info("🚧 Placeholder — implementação na Fase 3.")
+    st.subheader("Calendário econômico (US + BR)")
+    st.caption("Fonte: investing.com · próximos 14 dias · últimos 30 dias. "
+               "Surpresa = Actual − Forecast (verde = surpresa positiva para a moeda).")
+
+    import pandas as pd
+
+    with get_conn() as _conn:
+        _rows = _conn.execute(
+            "SELECT event_time, country, event_name, impact, "
+            "       forecast, previous, actual, surprise, surprise_pct, "
+            "       unit, source, ts_collected "
+            "FROM economic_events ORDER BY event_time ASC"
+        ).fetchall()
+
+    if not _rows:
+        st.warning("Sem dados do calendário no banco ainda.")
+        if st.button("🔄 Coletar agora", key="cal_first_run"):
+            from collectors import economic_calendar as _c
+            with st.spinner("Buscando calendário (~60-90s, passa por Cloudflare)..."):
+                _res = _c.collect()
+            if _res.get("status") in ("ok", "partial"):
+                st.success(f"OK — {_res['occurrences_upserted']} ocorrências "
+                           f"({_res['events_fetched']}/{_res['events_configured']} "
+                           f"eventos).")
+                st.rerun()
+            else:
+                st.error(f"Falha: primeira falha = "
+                         f"{_res.get('events_failed', [{}])[0].get('error','?')}")
+    else:
+        df = pd.DataFrame([dict(r) for r in _rows])
+        df["event_time"] = pd.to_datetime(df["event_time"], utc=True)
+        # converte pra SP p/ exibir
+        df["event_local"] = df["event_time"].dt.tz_convert("America/Sao_Paulo")
+
+        from datetime import datetime, timezone, timedelta
+        _now = datetime.now(timezone.utc)
+
+        # split: futuros (>= now) vs passados (< now)
+        future = df[df["event_time"] >= pd.Timestamp(_now)].copy()
+        past   = df[df["event_time"] <  pd.Timestamp(_now)].copy()
+
+        # formatadores
+        def _fmt_num(x, unit=None):
+            if x is None or pd.isna(x):
+                return "—"
+            s = f"{x:+.2f}" if unit == "%" else f"{x:.2f}"
+            return f"{s}{unit or ''}" if unit == "%" else f"{s}"
+
+        def _color_surprise(v):
+            if v is None or pd.isna(v):
+                return ""
+            if v > 0.05:  return "color: #0a9; font-weight: 600;"
+            if v < -0.05: return "color: #c33; font-weight: 600;"
+            return "color: #888;"
+
+        st.markdown("### 📅 Próximos eventos (14 dias)")
+        if future.empty:
+            st.caption("Nenhum evento agendado na janela.")
+        else:
+            vf = future.sort_values("event_time").head(40).copy()
+            vf["Quando"]   = vf["event_local"].dt.strftime("%a %d/%b %H:%M")
+            vf["País"]     = vf["country"]
+            vf["Evento"]   = vf["event_name"]
+            vf["Impacto"]  = vf["impact"].str.upper().map(
+                {"HIGH":"🔴 HIGH", "MEDIUM":"🟡 MED", "LOW":"⚪ LOW"}).fillna(vf["impact"])
+            vf["Previsão"] = vf.apply(lambda r: _fmt_num(r["forecast"], r["unit"]), axis=1)
+            vf["Anterior"] = vf.apply(lambda r: _fmt_num(r["previous"], r["unit"]), axis=1)
+            st.dataframe(
+                vf[["Quando","País","Evento","Impacto","Previsão","Anterior"]],
+                hide_index=True, use_container_width=True, height=min(40*len(vf)+40, 420),
+            )
+
+        st.markdown("### 📰 Últimos releases (30 dias)")
+        if past.empty:
+            st.caption("Nenhum release recente.")
+        else:
+            vp = past.sort_values("event_time", ascending=False).head(40).copy()
+            vp["Quando"]   = vp["event_local"].dt.strftime("%a %d/%b %H:%M")
+            vp["País"]     = vp["country"]
+            vp["Evento"]   = vp["event_name"]
+            vp["Impacto"]  = vp["impact"].str.upper().map(
+                {"HIGH":"🔴 HIGH", "MEDIUM":"🟡 MED", "LOW":"⚪ LOW"}).fillna(vp["impact"])
+            vp["Actual"]   = vp.apply(lambda r: _fmt_num(r["actual"], r["unit"]), axis=1)
+            vp["Previsão"] = vp.apply(lambda r: _fmt_num(r["forecast"], r["unit"]), axis=1)
+            vp["Anterior"] = vp.apply(lambda r: _fmt_num(r["previous"], r["unit"]), axis=1)
+            vp["Surpresa"] = vp["surprise"].apply(
+                lambda x: "—" if x is None or pd.isna(x) else f"{x:+.2f}")
+            styled = vp[["Quando","País","Evento","Impacto","Actual","Previsão","Anterior","Surpresa"]]\
+                .style.map(_color_surprise, subset=["Surpresa"])
+            st.dataframe(styled, hide_index=True, use_container_width=True,
+                         height=min(40*len(vp)+40, 420))
+
+        col_refresh, _ = st.columns([1, 5])
+        with col_refresh:
+            if st.button("🔄 Re-coletar agora", key="cal_rerun"):
+                from collectors import economic_calendar as _c
+                with st.spinner("Atualizando calendário..."):
+                    _res = _c.collect()
+                if _res.get("status") in ("ok", "partial"):
+                    st.success(f"OK — {_res['occurrences_upserted']} ocorrências "
+                               f"({_res['events_fetched']}/{_res['events_configured']} "
+                               f"eventos).")
+                    st.rerun()
+                else:
+                    st.error("Falha — veja logs.")
 
 with tab_uw:
     st.subheader("Options flow via Unusual Whales")
