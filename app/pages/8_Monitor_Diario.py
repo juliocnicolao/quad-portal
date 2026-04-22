@@ -225,7 +225,7 @@ st.markdown("---")
 
 tab_cal, tab_uw, tab_tru = st.tabs([
     "📅 Calendário econômico",
-    "📊 Options flow (UW)",
+    "📊 Options flow",
     "🌡️ Truflation",
 ])
 
@@ -342,13 +342,7 @@ with tab_cal:
                     st.error("Falha — veja logs.")
 
 with tab_uw:
-    st.subheader("Options flow via Unusual Whales")
-    st.caption("PBR · TLT · SPY · EWZ — daily stats (volume, OI, IV rank, "
-               "net premium) + aggregate GEX 1Y. Fonte: unusualwhales.com "
-               "sem login (API pública do frontend). "
-               "⚠ O endpoint `/market_state_all` retorna apenas os últimos "
-               "5 dias por call — a série histórica cresce a cada run 2×/dia "
-               "e vira útil estatisticamente após ~30 dias de acúmulo no DB.")
+    st.subheader("Options Flow")
 
     import pandas as pd
     import plotly.graph_objects as go
