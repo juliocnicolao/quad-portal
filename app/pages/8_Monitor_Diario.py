@@ -126,8 +126,38 @@ with c2:
     st.markdown(" ".join(badges), unsafe_allow_html=True)
 
 with c3:
-    st.button("▶ Rodar agora", disabled=True,
-              help="Será habilitado na Fase 5 (scheduler + polish)")
+    if st.button("▶ Rodar agora", key="hdr_run_now",
+                 help="Dispara o scheduler runner (calendar + uw + truflation)"):
+        from scheduler.runner import run as _run_all, SECTIONS as _ALL_SECTIONS
+        with st.spinner("Rodando todas as seções — pode levar 1–2 min…"):
+            _res = _run_all(list(_ALL_SECTIONS))
+        st.success(
+            f"run #{_res['run_id']} · status: {_res['status']} · "
+            + " · ".join(f"{k}={v}" for k, v in _res["sections"].items())
+        )
+        st.rerun()
+
+# Freshness por seção: idade do último ts_collected de cada tabela
+with get_conn() as _conn:
+    _fresh = {
+        "calendar":   _conn.execute(
+            "SELECT MAX(ts_collected) FROM economic_events"
+        ).fetchone()[0],
+        "uw":         _conn.execute(
+            "SELECT MAX(ts_collected) FROM options_flow_daily"
+        ).fetchone()[0],
+        "truflation": _conn.execute(
+            "SELECT MAX(ts_collected) FROM truflation_history"
+        ).fetchone()[0],
+    }
+f_items = []
+for key, label in [("calendar", "📅 Calendário"),
+                   ("uw",        "📊 Options"),
+                   ("truflation","🌡️ Truflation")]:
+    f_items.append(f"{label}: {_age_badge(_fresh.get(key))}")
+st.markdown("<div style='font-size:0.8rem;'>"
+            + " &nbsp;·&nbsp; ".join(f_items)
+            + "</div>", unsafe_allow_html=True)
 
 st.markdown("---")
 
