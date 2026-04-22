@@ -514,46 +514,13 @@ with tab_tru:
         ts_coll = latest["ts_collected"]
         cur_val = float(latest["value"])
 
-        # Deltas macro (calculados do df pra janelas > 30d)
-        def _delta_n_days(n: int) -> float | None:
-            target = latest["date"] - pd.Timedelta(days=n)
-            prior = df[df["date"] <= target]
-            if prior.empty:
-                return None
-            return cur_val - float(prior.iloc[-1]["value"])
-
-        def _delta_ytd() -> float | None:
-            year_start = df[df["date"].dt.year == latest["date"].year]
-            if year_start.empty:
-                return None
-            return cur_val - float(year_start.iloc[0]["value"])
-
-        d_90  = _delta_n_days(90)
-        d_ytd = _delta_ytd()
-        d_1y  = _delta_n_days(365)
-
-        def _fmt_delta(v):
-            return f"{v:+.3f}" if v is not None else "—"
-
-        # Linha 1: valor atual + deltas curtos (1d/7d/30d) + badge coleta
-        c_val, c_1d, c_7d, c_30d, c_age = st.columns([2, 1, 1, 1, 2])
-        c_val.metric("Valor atual (YoY %)",
-                     f"{cur_val:.2f}%",
-                     delta=(f"{latest['change_1d']:+.3f} pp"
-                            if latest["change_1d"] is not None else None))
-        c_1d.metric("Δ 1d",  _fmt_delta(latest["change_1d"]))
-        c_7d.metric("Δ 7d",  _fmt_delta(latest["change_7d"]))
-        c_30d.metric("Δ 30d", _fmt_delta(latest["change_30d"]))
+        # Header minimalista: valor atual + badge de coleta
+        c_val, _pad, c_age = st.columns([2, 3, 2])
+        c_val.metric("Valor atual (YoY %)", f"{cur_val:.2f}%")
         with c_age:
             st.markdown("**Última coleta**")
             st.markdown(_age_badge(ts_coll), unsafe_allow_html=True)
             st.caption(f"ref: {latest['date'].strftime('%Y-%m-%d')}")
-
-        # Linha 2: deltas macro (90d / YTD / 1Y)
-        c_90d, c_ytd, c_1y, _pad = st.columns([1, 1, 1, 4])
-        c_90d.metric("Δ 90d", _fmt_delta(d_90))
-        c_ytd.metric("Δ YTD", _fmt_delta(d_ytd))
-        c_1y.metric("Δ 1Y",   _fmt_delta(d_1y))
 
         # Chart: janela completa disponivel (1Y)
         df_plot = df.copy()
