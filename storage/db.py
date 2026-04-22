@@ -80,6 +80,85 @@ def _db_path() -> Path:
     return _REPO_ROOT / rel
 
 
+# ─── libsql row/cursor wrappers ─────────────────────────────────────────────
+# libsql retorna rows como tuplas. sqlite3 com row_factory=Row retorna objetos
+# que suportam r["col"], dict(r), r[0]. Pra manter a API uniforme nos dois
+# modos, wrappamos cursors remotos aqui.
+
+class _RowDict(dict):
+    """dict que tambem aceita acesso por indice int (r[0])."""
+    __slots__ = ("_values",)
+
+    def __init__(self, cols, values):
+        super().__init__(zip(cols, values))
+        object.__setattr__(self, "_values", tuple(values))
+
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return self._values[key]
+        return super().__getitem__(key)
+
+
+class _LibsqlDictCursor:
+    def __init__(self, cur):
+        self._cur = cur
+
+    def _cols(self) -> list[str]:
+        desc = self._cur.description or ()
+        return [d[0] for d in desc]
+
+    def fetchone(self):
+        row = self._cur.fetchone()
+        if row is None:
+            return None
+        return _RowDict(self._cols(), row)
+
+    def fetchall(self):
+        cols = self._cols()
+        return [_RowDict(cols, r) for r in self._cur.fetchall()]
+
+    @property
+    def lastrowid(self):
+        return self._cur.lastrowid
+
+    @property
+    def description(self):
+        return self._cur.description
+
+    def __iter__(self):
+        cols = self._cols()
+        for r in self._cur:
+            yield _RowDict(cols, r)
+
+
+class _LibsqlDictConn:
+    """Proxy thin em volta de libsql.Connection com cursors dict-like."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def execute(self, sql, params=()):
+        return _LibsqlDictCursor(self._raw.execute(sql, params))
+
+    def executescript(self, sql):
+        # libsql tem executescript nativamente? Fallback pra split.
+        if hasattr(self._raw, "executescript"):
+            try:
+                return self._raw.executescript(sql)
+            except Exception:
+                pass
+        for stmt in sql.split(";"):
+            s = stmt.strip()
+            if s:
+                self._raw.execute(s)
+
+    def commit(self):
+        return self._raw.commit()
+
+    def close(self):
+        return self._raw.close()
+
+
 # ─── connection factory ─────────────────────────────────────────────────────
 
 @contextmanager
@@ -98,17 +177,17 @@ def get_conn():
                 "TURSO_DATABASE_URL set but libsql not installed. "
                 "Run: pip install libsql"
             ) from ex
-        conn = libsql.connect(url, auth_token=tok)
+        raw = libsql.connect(url, auth_token=tok)
+        conn = _LibsqlDictConn(raw)
         try:
             yield conn
         finally:
             try:
-                conn.commit()
+                raw.commit()
             except Exception:
                 pass
-            # libsql_experimental nao tem close() explicito em versoes antigas
             try:
-                conn.close()
+                raw.close()
             except Exception:
                 pass
         return
