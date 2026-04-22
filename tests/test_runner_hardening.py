@@ -164,6 +164,7 @@ def test_backup_db_creates_vacuumed_copy(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runner, "_REPO_ROOT", tmp_path)
     monkeypatch.setattr(runner, "get_conn", _conn)
+    monkeypatch.setattr(runner, "is_remote", lambda: False)
 
     out = runner._backup_db(retention_days=14)
     assert out is not None
@@ -200,6 +201,7 @@ def test_backup_db_removes_old(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runner, "_REPO_ROOT", tmp_path)
     monkeypatch.setattr(runner, "get_conn", _conn)
+    monkeypatch.setattr(runner, "is_remote", lambda: False)
 
     runner._backup_db(retention_days=14)
     assert not old.exists()
@@ -208,5 +210,13 @@ def test_backup_db_removes_old(tmp_path, monkeypatch):
 def test_backup_db_handles_missing_db(tmp_path, monkeypatch):
     # nao cria data/monitor_diario.db
     monkeypatch.setattr(runner, "_REPO_ROOT", tmp_path)
+    monkeypatch.setattr(runner, "is_remote", lambda: False)
     out = runner._backup_db(retention_days=14)
     assert out is None  # silencioso, sem crash
+
+
+def test_backup_db_skipped_when_remote(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "_REPO_ROOT", tmp_path)
+    monkeypatch.setattr(runner, "is_remote", lambda: True)
+    out = runner._backup_db(retention_days=14)
+    assert out is None  # no-op em modo remoto

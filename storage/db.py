@@ -92,13 +92,13 @@ def get_conn():
     url, tok = _turso_creds()
     if url and tok:
         try:
-            import libsql_experimental as libsql  # type: ignore
+            import libsql  # type: ignore
         except ImportError as ex:
             raise RuntimeError(
-                "TURSO_DATABASE_URL set but libsql-experimental not installed. "
-                "Run: pip install libsql-experimental"
+                "TURSO_DATABASE_URL set but libsql not installed. "
+                "Run: pip install libsql"
             ) from ex
-        conn = libsql.connect(database=url, auth_token=tok)
+        conn = libsql.connect(url, auth_token=tok)
         try:
             yield conn
         finally:
