@@ -315,6 +315,8 @@ def collect() -> dict[str, Any]:
     lookahead = int(cfg.get("lookahead_days", 14))
     delay     = float(cfg.get("request_delay_s", 1.5))
     timeout   = float(cfg.get("request_timeout_s", 30.0))
+    max_retries = int(cfg.get("max_retries", 2))          # 1 retry por default
+    retry_backoff = float(cfg.get("retry_backoff_s", 4.0))
 
     # achata: [(country_hint, name, slug), ...]
     flat: list[tuple[str, str, str]] = []
@@ -341,26 +343,45 @@ def collect() -> dict[str, Any]:
         for i, (country_hint, name, slug) in enumerate(flat):
             if i > 0:
                 time.sleep(delay)
-            try:
-                html = fetch_event_html(cb.page, slug,
-                                        timeout_ms=int(timeout * 1000))
-                nd = extract_next_data(html)
-                meta, occ = parse_event_page(nd)
-                rows = parse_occurrences(
-                    metadata=meta, occurrences=occ,
-                    event_name=name, now_utc=now_utc,
-                    lookback_days=lookback, lookahead_days=lookahead,
-                )
-                n = _upsert_rows(rows, ts_collected=ts_collected)
-                total_ups += n
-                ok += 1
-                _log.info("calendar: %s/%s — %d occurrences upserted",
-                          country_hint, name, n)
-            except Exception as ex:
-                _log.warning("calendar failed for %s/%s (%s): %s",
-                             country_hint, name, slug, ex)
+            # retry com backoff pra erros transitorios (Cloudflare,
+            # timeout). max_retries=2 -> ate 3 tentativas por slug.
+            last_ex: Exception | None = None
+            for attempt in range(max_retries + 1):
+                try:
+                    html = fetch_event_html(cb.page, slug,
+                                            timeout_ms=int(timeout * 1000))
+                    nd = extract_next_data(html)
+                    meta, occ = parse_event_page(nd)
+                    rows = parse_occurrences(
+                        metadata=meta, occurrences=occ,
+                        event_name=name, now_utc=now_utc,
+                        lookback_days=lookback, lookahead_days=lookahead,
+                    )
+                    n = _upsert_rows(rows, ts_collected=ts_collected)
+                    total_ups += n
+                    ok += 1
+                    if attempt > 0:
+                        _log.info("calendar: %s/%s — %d occurrences upserted "
+                                  "(recovered on attempt %d)",
+                                  country_hint, name, n, attempt + 1)
+                    else:
+                        _log.info("calendar: %s/%s — %d occurrences upserted",
+                                  country_hint, name, n)
+                    last_ex = None
+                    break
+                except Exception as ex:
+                    last_ex = ex
+                    if attempt < max_retries:
+                        wait = retry_backoff * (attempt + 1)
+                        _log.info("calendar retry %d/%d for %s/%s after %.1fs: %s",
+                                  attempt + 1, max_retries, country_hint,
+                                  name, wait, str(ex)[:120])
+                        time.sleep(wait)
+            if last_ex is not None:
+                _log.warning("calendar failed for %s/%s (%s) after %d attempts: %s",
+                             country_hint, name, slug, max_retries + 1, last_ex)
                 failures.append({"slug": slug, "country": country_hint,
-                                 "name": name, "error": str(ex)[:180]})
+                                 "name": name, "error": str(last_ex)[:180]})
 
     if ok == 0:
         status = "failed"

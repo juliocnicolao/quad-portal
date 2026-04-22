@@ -54,7 +54,7 @@ def _last_run() -> dict | None:
     """Ultimo registro de scheduler_runs."""
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT id, ts_started, ts_finished, status, sections "
+            "SELECT id, ts_started, ts_finished, status, sections, notes "
             "FROM scheduler_runs ORDER BY id DESC LIMIT 1"
         ).fetchone()
     if not row:
@@ -64,6 +64,10 @@ def _last_run() -> dict | None:
         out["sections"] = json.loads(out["sections"] or "{}")
     except json.JSONDecodeError:
         out["sections"] = {}
+    try:
+        out["notes"] = json.loads(out["notes"]) if out.get("notes") else {}
+    except json.JSONDecodeError:
+        out["notes"] = {}
     return out
 
 
@@ -158,6 +162,37 @@ for key, label in [("calendar", "📅 Calendário"),
 st.markdown("<div style='font-size:0.8rem;'>"
             + " &nbsp;·&nbsp; ".join(f_items)
             + "</div>", unsafe_allow_html=True)
+
+# Erros detalhados do ultimo run (collapsed por padrao)
+if last and last.get("notes"):
+    _notes = last["notes"]
+    total_fails = sum(len(v.get("failed", []))
+                      for v in _notes.values() if isinstance(v, dict))
+    if total_fails:
+        with st.expander(f"⚠️ {total_fails} falha(s) no último run · detalhes",
+                         expanded=False):
+            for sec, payload in _notes.items():
+                if not isinstance(payload, dict):
+                    continue
+                fails = payload.get("failed") or []
+                err   = payload.get("error")
+                if err and not fails:
+                    st.error(f"**{sec}** · {err}")
+                for f in fails:
+                    if sec == "calendar":
+                        st.caption(
+                            f"📅 **{f.get('country','?')}** · "
+                            f"{f.get('name','?')} (slug: `{f.get('slug','?')}`)"
+                            f"  \n&nbsp;&nbsp;↳ `{f.get('error','')}`"
+                        )
+                    elif sec == "uw":
+                        st.caption(
+                            f"📊 **{f.get('ticker','?')}** "
+                            f"({f.get('stage','?')})"
+                            f"  \n&nbsp;&nbsp;↳ `{f.get('error','')}`"
+                        )
+                    else:
+                        st.caption(f"**{sec}** · {f}")
 
 st.markdown("---")
 

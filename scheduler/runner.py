@@ -23,6 +23,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+import yaml
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
@@ -43,8 +45,12 @@ def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _run_section(name: str) -> str:
-    """Invoca o collector correspondente. Retorna 'ok'|'failed'|'skipped'."""
+def _run_section(name: str) -> tuple[str, dict]:
+    """Invoca o collector. Retorna (status, full_result_dict).
+
+    `full_result_dict` carrega events_failed/tickers/etc. pra serializar
+    em scheduler_runs.notes. Status eh 'ok'|'partial'|'failed'|'skipped'.
+    """
     try:
         if name == "calendar":
             from collectors import economic_calendar as c
@@ -54,22 +60,84 @@ def _run_section(name: str) -> str:
             from collectors import truflation as c
         else:
             _log.warning("unknown section %s", name)
-            return "skipped"
+            return "skipped", {}
 
-        result = c.collect()
-        status = (result or {}).get("status", "ok")
+        result = c.collect() or {}
+        status = result.get("status", "ok")
         _log.info("section %s -> %s", name, status)
-        return status
+        return status, result
     except NotImplementedError:
         _log.info("section %s — stub (NotImplementedError), skipping", name)
-        return "skipped"
+        return "skipped", {}
     except Exception as ex:
         _log.exception("section %s failed: %s", name, ex)
-        return "failed"
+        return "failed", {"error": str(ex)[:300]}
+
+
+def _rotate_logs(retention_days: int = 14) -> None:
+    """Rotate `logs/scheduler_run.log` se ele tiver >retention_days dias.
+
+    Simples: se o arquivo existe e a mtime eh mais velha que retention_days,
+    move pra scheduler_run.log.YYYY-MM-DD e recomeca. Alem disso, apaga
+    rotated logs mais velhos que retention_days.
+    """
+    from datetime import date, timedelta
+    logs_dir = _REPO_ROOT / "logs"
+    if not logs_dir.exists():
+        return
+    active = logs_dir / "scheduler_run.log"
+    today = date.today()
+    cutoff = today - timedelta(days=retention_days)
+
+    # Rotate ativo se mtime for de ontem ou mais velho
+    if active.exists():
+        mtime_date = datetime.fromtimestamp(active.stat().st_mtime).date()
+        if mtime_date < today:
+            rotated = logs_dir / f"scheduler_run.log.{mtime_date.isoformat()}"
+            try:
+                if not rotated.exists():
+                    active.rename(rotated)
+                else:
+                    # ja existe (day wrap com 2 runs): append + truncate
+                    rotated.write_bytes(rotated.read_bytes() + active.read_bytes())
+                    active.write_bytes(b"")
+            except OSError as ex:
+                _log.warning("log rotate failed: %s", ex)
+
+    # Apaga logs mais velhos que retention
+    for p in logs_dir.glob("scheduler_run.log.*"):
+        try:
+            suffix = p.name.rsplit(".", 1)[-1]  # YYYY-MM-DD
+            y, m, d = (int(x) for x in suffix.split("-"))
+            if date(y, m, d) < cutoff:
+                p.unlink()
+                _log.info("rotated log removed: %s", p.name)
+        except (ValueError, OSError):
+            continue
+
+
+def _retention_days_from_config() -> int:
+    try:
+        cfg_path = _REPO_ROOT / "config.yaml"
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        return int(cfg.get("logging", {}).get("retention_days", 14))
+    except Exception:
+        return 14
+
+
+def _vacuum_scheduler_runs(keep_last: int = 200) -> None:
+    """Mantem so os ultimos N registros de scheduler_runs."""
+    with get_conn() as conn:
+        conn.execute(
+            "DELETE FROM scheduler_runs WHERE id NOT IN "
+            "(SELECT id FROM scheduler_runs ORDER BY id DESC LIMIT ?)",
+            (keep_last,),
+        )
 
 
 def run(sections: list[str]) -> dict:
     apply_migrations()
+    _rotate_logs(_retention_days_from_config())
     ts_started = _now_utc_iso()
 
     with get_conn() as conn:
@@ -80,27 +148,46 @@ def run(sections: list[str]) -> dict:
         run_id = cur.lastrowid
 
     results: dict[str, str] = {}
+    details: dict[str, dict] = {}
     for s in sections:
-        results[s] = _run_section(s)
+        st, det = _run_section(s)
+        results[s] = st
+        details[s] = det
 
-    # Status consolidado
-    any_failed = any(v == "failed" for v in results.values())
-    all_ok     = all(v == "ok" for v in results.values() if v != "skipped")
-    if any_failed and all_ok:
-        status = "partial"
-    elif any_failed:
+    # Status consolidado. "partial" = ao menos um OK e ao menos um falhou/parcial.
+    has_failed   = any(v == "failed"  for v in results.values())
+    has_partial  = any(v == "partial" for v in results.values())
+    has_ok       = any(v == "ok"      for v in results.values())
+    if has_failed and not has_ok:
         status = "failed"
+    elif has_failed or has_partial:
+        status = "partial"
     else:
         status = "ok"
+
+    # notes: JSON compacto com eventos/tickers que falharam por secao
+    notes_payload = {}
+    for s, det in details.items():
+        if not det:
+            continue
+        ef = det.get("events_failed") or det.get("failed")
+        if ef:
+            notes_payload[s] = {"failed": ef}
+        elif det.get("error"):
+            notes_payload[s] = {"error": det["error"]}
+    notes_json = json.dumps(notes_payload, ensure_ascii=False) if notes_payload else None
 
     ts_finished = _now_utc_iso()
     with get_conn() as conn:
         conn.execute(
-            "UPDATE scheduler_runs SET ts_finished=?, status=?, sections=? WHERE id=?",
-            (ts_finished, status, json.dumps(results), run_id),
+            "UPDATE scheduler_runs SET ts_finished=?, status=?, sections=?, notes=? "
+            "WHERE id=?",
+            (ts_finished, status, json.dumps(results), notes_json, run_id),
         )
+    _vacuum_scheduler_runs(keep_last=200)
     _log.info("run %s finished: %s (%s)", run_id, status, results)
-    return {"run_id": run_id, "status": status, "sections": results}
+    return {"run_id": run_id, "status": status, "sections": results,
+            "notes": notes_payload}
 
 
 def main():
