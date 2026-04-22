@@ -422,28 +422,34 @@ with tab_uw:
         })
         st.dataframe(show, use_container_width=True, hide_index=True)
 
-        # GEX chart — call_gex vs put_gex por ticker (últimos 120 dias)
+        # GEX chart — estilo Unusual Whales: gamma liquido (barras) + price (linha)
         if not df_gex.empty:
-            st.markdown("**GEX diário agregado (últimos 120 dias)**")
+            st.markdown("**Daily GEX (últimos 120 dias)**")
             tickers_avail = sorted(df_gex["ticker"].unique())
             sel_tk = st.selectbox("Ticker", tickers_avail, key="uw_gex_ticker")
             sub = (df_gex[df_gex["ticker"] == sel_tk]
-                   .sort_values("date").tail(120))
+                   .sort_values("date").tail(120)).copy()
             sub["date"] = pd.to_datetime(sub["date"])
+            sub["gamma"] = sub["call_gex"].fillna(0) + sub["put_gex"].fillna(0)
+
             fig = go.Figure()
-            fig.add_trace(go.Bar(x=sub["date"], y=sub["call_gex"],
-                                  name="Call GEX", marker_color="#2ca02c"))
-            fig.add_trace(go.Bar(x=sub["date"], y=sub["put_gex"],
-                                  name="Put GEX",  marker_color="#d62728"))
-            fig.add_trace(go.Scatter(x=sub["date"], y=sub["close"],
-                                      name="Close", yaxis="y2",
-                                      line=dict(color="#1f77b4", width=2)))
+            fig.add_trace(go.Bar(
+                x=sub["date"], y=sub["gamma"],
+                name="gamma",
+                marker_color="#a855f7",
+            ))
+            fig.add_trace(go.Scatter(
+                x=sub["date"], y=sub["close"],
+                name="Price", yaxis="y2",
+                line=dict(color="#d4b585", width=2),
+            ))
             fig.update_layout(
-                barmode="relative", height=380,
+                height=380,
                 margin=dict(t=20, b=40, l=20, r=20),
-                yaxis=dict(title="GEX"),
-                yaxis2=dict(title="Close", overlaying="y", side="right"),
+                yaxis=dict(title="gamma"),
+                yaxis2=dict(title="Price", overlaying="y", side="right"),
                 legend=dict(orientation="h", y=1.08),
+                template="plotly_dark",
             )
             st.plotly_chart(fig, use_container_width=True)
 
