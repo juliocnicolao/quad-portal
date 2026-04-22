@@ -135,9 +135,61 @@ def _vacuum_scheduler_runs(keep_last: int = 200) -> None:
         )
 
 
+def _backup_db(retention_days: int = 14) -> Path | None:
+    """Snapshot diario do SQLite via `VACUUM INTO`.
+
+    Cria data/backups/monitor_diario-YYYY-MM-DD.db. Se ja existe pro dia,
+    faz nada (idempotente por dia). Apaga backups mais velhos que
+    retention_days. Retorna o path do backup criado ou None.
+    """
+    from datetime import date, timedelta
+    import yaml as _yaml
+
+    cfg_path = _REPO_ROOT / "config.yaml"
+    db_rel = "data/monitor_diario.db"
+    try:
+        cfg = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        db_rel = cfg.get("storage", {}).get("db_path", db_rel)
+    except Exception:
+        pass
+    db_path = _REPO_ROOT / db_rel
+    if not db_path.exists():
+        return None
+
+    backups_dir = db_path.parent / "backups"
+    backups_dir.mkdir(parents=True, exist_ok=True)
+    today = date.today()
+    target = backups_dir / f"{db_path.stem}-{today.isoformat()}.db"
+
+    created: Path | None = None
+    if not target.exists():
+        try:
+            with get_conn() as conn:
+                conn.execute(f"VACUUM INTO '{target.as_posix()}'")
+            created = target
+            _log.info("db backup written: %s", target.name)
+        except Exception as ex:
+            _log.warning("db backup failed: %s", ex)
+
+    # Retencao
+    cutoff = today - timedelta(days=retention_days)
+    prefix = f"{db_path.stem}-"
+    for p in backups_dir.glob(f"{prefix}*.db"):
+        try:
+            suffix = p.stem[len(prefix):]
+            y, m, d = (int(x) for x in suffix.split("-"))
+            if date(y, m, d) < cutoff:
+                p.unlink()
+                _log.info("old backup removed: %s", p.name)
+        except (ValueError, OSError):
+            continue
+    return created
+
+
 def run(sections: list[str]) -> dict:
     apply_migrations()
     _rotate_logs(_retention_days_from_config())
+    _backup_db(retention_days=_retention_days_from_config())
     ts_started = _now_utc_iso()
 
     with get_conn() as conn:

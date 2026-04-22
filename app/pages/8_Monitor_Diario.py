@@ -390,25 +390,30 @@ with tab_uw:
             unsafe_allow_html=True,
         )
 
-        cols = st.columns(len(latest_per_ticker))
-        for col, (tk, row) in zip(cols, latest_per_ticker.iterrows()):
-            with col:
-                st.markdown(f"#### {tk}")
-                close = row.get("close")
-                pct = row.get("pct_change")
-                st.metric(
-                    "Close",
-                    f"{close:.2f}" if close is not None else "—",
-                    delta=(f"{pct*100:+.2f}%" if pct is not None else None),
-                )
-                ivr = row.get("ivr")
-                st.caption(f"IV Rank: **{ivr:.1f}**" if ivr is not None else "IV Rank: —")
-                pcr = row.get("pc_ratio")
-                st.caption(f"P/C Vol: **{pcr:.2f}**" if pcr is not None else "P/C Vol: —")
-                np_ = row.get("net_prem")
-                if np_ is not None:
-                    sign = "🟢" if np_ > 0 else "🔴"
-                    st.caption(f"Net prem: {sign} **${np_/1e6:+.2f}M**")
+        # Cards em linhas de até 4 tickers (evita colunas apertadas se >4).
+        _per_row = 4
+        _items = list(latest_per_ticker.iterrows())
+        for _start in range(0, len(_items), _per_row):
+            _chunk = _items[_start:_start + _per_row]
+            _cols = st.columns(len(_chunk))
+            for col, (tk, row) in zip(_cols, _chunk):
+                with col:
+                    st.markdown(f"#### {tk}")
+                    close = row.get("close")
+                    pct = row.get("pct_change")
+                    st.metric(
+                        "Close",
+                        f"{close:.2f}" if close is not None else "—",
+                        delta=(f"{pct*100:+.2f}%" if pct is not None else None),
+                    )
+                    ivr = row.get("ivr")
+                    st.caption(f"IV Rank: **{ivr:.1f}**" if ivr is not None else "IV Rank: —")
+                    pcr = row.get("pc_ratio")
+                    st.caption(f"P/C Vol: **{pcr:.2f}**" if pcr is not None else "P/C Vol: —")
+                    np_ = row.get("net_prem")
+                    if np_ is not None:
+                        sign = "🟢" if np_ > 0 else "🔴"
+                        st.caption(f"Net prem: {sign} **${np_/1e6:+.2f}M**")
 
         st.markdown("---")
 

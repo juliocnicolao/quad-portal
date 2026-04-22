@@ -135,3 +135,78 @@ def test_retention_days_fallback_when_config_missing(tmp_path, monkeypatch):
     # sem config.yaml
     monkeypatch.setattr(runner, "_REPO_ROOT", tmp_path)
     assert runner._retention_days_from_config() == 14
+
+
+# ─── db backup ──────────────────────────────────────────────────────────────
+
+def test_backup_db_creates_vacuumed_copy(tmp_path, monkeypatch):
+    # Setup: pequeno DB real + config.yaml + mock de get_conn
+    (tmp_path / "data").mkdir()
+    db_path = tmp_path / "data" / "monitor_diario.db"
+    c = sqlite3.connect(str(db_path))
+    c.execute("CREATE TABLE t(x INTEGER)")
+    c.execute("INSERT INTO t VALUES (1),(2),(3)")
+    c.commit()
+    c.close()
+    (tmp_path / "config.yaml").write_text(
+        'storage:\n  db_path: "data/monitor_diario.db"\n', encoding="utf-8"
+    )
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _conn():
+        cc = sqlite3.connect(str(db_path), isolation_level=None)
+        try:
+            yield cc
+        finally:
+            cc.close()
+
+    monkeypatch.setattr(runner, "_REPO_ROOT", tmp_path)
+    monkeypatch.setattr(runner, "get_conn", _conn)
+
+    out = runner._backup_db(retention_days=14)
+    assert out is not None
+    assert out.exists()
+    assert out.name.startswith("monitor_diario-")
+    # segundo call no mesmo dia: idempotente (retorna None, arquivo nao muda)
+    out2 = runner._backup_db(retention_days=14)
+    assert out2 is None
+
+
+def test_backup_db_removes_old(tmp_path, monkeypatch):
+    (tmp_path / "data").mkdir()
+    db_path = tmp_path / "data" / "monitor_diario.db"
+    sqlite3.connect(str(db_path)).close()
+    (tmp_path / "config.yaml").write_text(
+        'storage:\n  db_path: "data/monitor_diario.db"\n', encoding="utf-8"
+    )
+    # simula backup antigo
+    backups = tmp_path / "data" / "backups"
+    backups.mkdir()
+    old_date = (date.today() - timedelta(days=30)).isoformat()
+    old = backups / f"monitor_diario-{old_date}.db"
+    old.write_bytes(b"dummy")
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _conn():
+        cc = sqlite3.connect(str(db_path), isolation_level=None)
+        try:
+            yield cc
+        finally:
+            cc.close()
+
+    monkeypatch.setattr(runner, "_REPO_ROOT", tmp_path)
+    monkeypatch.setattr(runner, "get_conn", _conn)
+
+    runner._backup_db(retention_days=14)
+    assert not old.exists()
+
+
+def test_backup_db_handles_missing_db(tmp_path, monkeypatch):
+    # nao cria data/monitor_diario.db
+    monkeypatch.setattr(runner, "_REPO_ROOT", tmp_path)
+    out = runner._backup_db(retention_days=14)
+    assert out is None  # silencioso, sem crash
