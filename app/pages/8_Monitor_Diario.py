@@ -37,6 +37,20 @@ inject_css()
 render_sidebar()
 page_header("Monitor Diário")
 
+def _is_cloud() -> bool:
+    """True quando rodando fora do Windows local (=Streamlit Cloud Linux).
+
+    Coletas de Calendario dependem de Playwright+Chromium, que so estao
+    instalados no worker Windows local. No Cloud, a UI eh read-only e os
+    dados vem do Turso populados pelo scheduler local 2x/dia.
+    """
+    return sys.platform != "win32"
+
+
+_CLOUD_HINT = ("Coleta manual indisponivel no Cloud — dados populados pelo "
+               "scheduler local 2×/dia (08:30 e 18:30 BRT).")
+
+
 # Garante schema (idempotente, barato)
 try:
     apply_migrations()
@@ -145,15 +159,18 @@ with c3:
         )
         return p.pid
 
-    if st.button("▶ Rodar agora", key="hdr_run_now",
-                 help="Dispara scheduler runner em background (UI não trava)"):
-        try:
-            pid = _spawn_runner_bg()
-            st.toast(f"Runner disparado (PID {pid}). Acompanhe pelos badges.",
-                     icon="🚀")
-            st.session_state["_uw_last_spawn_ts"] = datetime.now(timezone.utc).isoformat()
-        except Exception as _ex:
-            st.error(f"Falha ao disparar runner: {_ex}")
+    if _is_cloud():
+        st.caption("ℹ️ Coletas rodam no scheduler local 2×/dia.")
+    else:
+        if st.button("▶ Rodar agora", key="hdr_run_now",
+                     help="Dispara scheduler runner em background (UI não trava)"):
+            try:
+                pid = _spawn_runner_bg()
+                st.toast(f"Runner disparado (PID {pid}). Acompanhe pelos badges.",
+                         icon="🚀")
+                st.session_state["_uw_last_spawn_ts"] = datetime.now(timezone.utc).isoformat()
+            except Exception as _ex:
+                st.error(f"Falha ao disparar runner: {_ex}")
 
 # Freshness por seção: idade do último ts_collected de cada tabela
 with get_conn() as _conn:
@@ -236,7 +253,9 @@ with tab_cal:
 
     if not _rows:
         st.warning("Sem dados do calendário no banco ainda.")
-        if st.button("🔄 Coletar agora", key="cal_first_run"):
+        if _is_cloud():
+            st.caption(_CLOUD_HINT)
+        elif st.button("🔄 Coletar agora", key="cal_first_run"):
             from collectors import economic_calendar as _c
             with st.spinner("Buscando calendário (~60-90s, passa por Cloudflare)..."):
                 _res = _c.collect()
@@ -317,19 +336,20 @@ with tab_cal:
             st.dataframe(styled, hide_index=True, use_container_width=True,
                          height=min(40*len(vp)+40, 420))
 
-        col_refresh, _ = st.columns([1, 5])
-        with col_refresh:
-            if st.button("🔄 Re-coletar agora", key="cal_rerun"):
-                from collectors import economic_calendar as _c
-                with st.spinner("Atualizando calendário..."):
-                    _res = _c.collect()
-                if _res.get("status") in ("ok", "partial"):
-                    st.success(f"OK — {_res['occurrences_upserted']} ocorrências "
-                               f"({_res['events_fetched']}/{_res['events_configured']} "
-                               f"eventos).")
-                    st.rerun()
-                else:
-                    st.error("Falha — veja logs.")
+        if not _is_cloud():
+            col_refresh, _ = st.columns([1, 5])
+            with col_refresh:
+                if st.button("🔄 Re-coletar agora", key="cal_rerun"):
+                    from collectors import economic_calendar as _c
+                    with st.spinner("Atualizando calendário..."):
+                        _res = _c.collect()
+                    if _res.get("status") in ("ok", "partial"):
+                        st.success(f"OK — {_res['occurrences_upserted']} ocorrências "
+                                   f"({_res['events_fetched']}/{_res['events_configured']} "
+                                   f"eventos).")
+                        st.rerun()
+                    else:
+                        st.error("Falha — veja logs.")
 
 with tab_uw:
     st.subheader("Options Flow")
@@ -351,7 +371,9 @@ with tab_uw:
 
     if not _flow_rows and not _gex_rows:
         st.warning("Ainda não há dados de Unusual Whales no banco.")
-        if st.button("🔄 Coletar agora", key="uw_first_run"):
+        if _is_cloud():
+            st.caption(_CLOUD_HINT)
+        elif st.button("🔄 Coletar agora", key="uw_first_run"):
             from collectors import unusual_whales as _uw
             with st.spinner("Coletando options flow + GEX (4 tickers)..."):
                 _res = _uw.collect()
@@ -455,18 +477,19 @@ with tab_uw:
             fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
             st.plotly_chart(fig, use_container_width=True)
 
-        if st.button("🔄 Re-coletar agora", key="uw_rerun"):
-            from collectors import unusual_whales as _uw
-            with st.spinner("Coletando..."):
-                _res = _uw.collect()
-            if _res.get("status") in ("ok", "partial"):
-                st.success(
-                    f"{_res['status']} — flow {_res['flow_upserted']}, "
-                    f"gex {_res['gex_upserted']}"
-                )
-                st.rerun()
-            else:
-                st.error(f"Falha: {_res.get('failed') or _res.get('error')}")
+        if not _is_cloud():
+            if st.button("🔄 Re-coletar agora", key="uw_rerun"):
+                from collectors import unusual_whales as _uw
+                with st.spinner("Coletando..."):
+                    _res = _uw.collect()
+                if _res.get("status") in ("ok", "partial"):
+                    st.success(
+                        f"{_res['status']} — flow {_res['flow_upserted']}, "
+                        f"gex {_res['gex_upserted']}"
+                    )
+                    st.rerun()
+                else:
+                    st.error(f"Falha: {_res.get('failed') or _res.get('error')}")
 
 with tab_tru:
     st.subheader("Truflation US CPI Inflation Index")
@@ -483,17 +506,20 @@ with tab_tru:
 
     if not _rows:
         st.warning("Ainda não há dados de Truflation no banco.")
-        col_run1, col_run2 = st.columns([1, 5])
-        with col_run1:
-            if st.button("🔄 Coletar agora", key="tru_first_run"):
-                from collectors import truflation as _t
-                with st.spinner("Buscando dados da Truflation..."):
-                    _res = _t.collect()
-                if _res.get("status") == "ok":
-                    st.success(f"OK — {_res['rows_upserted']} pontos carregados.")
-                    st.rerun()
-                else:
-                    st.error(f"Falha: {_res.get('error', 'erro desconhecido')}")
+        if _is_cloud():
+            st.caption(_CLOUD_HINT)
+        else:
+            col_run1, col_run2 = st.columns([1, 5])
+            with col_run1:
+                if st.button("🔄 Coletar agora", key="tru_first_run"):
+                    from collectors import truflation as _t
+                    with st.spinner("Buscando dados da Truflation..."):
+                        _res = _t.collect()
+                    if _res.get("status") == "ok":
+                        st.success(f"OK — {_res['rows_upserted']} pontos carregados.")
+                        st.rerun()
+                    else:
+                        st.error(f"Falha: {_res.get('error', 'erro desconhecido')}")
     else:
         df = pd.DataFrame([dict(r) for r in _rows])
         df["date"] = pd.to_datetime(df["date"])
@@ -539,17 +565,16 @@ with tab_tru:
                 hide_index=True, use_container_width=True,
             )
 
-        # Botao re-coletar manual
-        with st.container():
-            if st.button("🔄 Re-coletar agora", key="tru_rerun"):
-                from collectors import truflation as _t
-                with st.spinner("Atualizando Truflation..."):
-                    _res = _t.collect()
-                if _res.get("status") == "ok":
-                    st.success(f"Atualizado — {_res['rows_upserted']} pontos.")
-                    st.rerun()
-                else:
-                    st.error(f"Falha: {_res.get('error', 'erro desconhecido')}")
+        # Botao re-coletar manual (so no worker local)
+        if not _is_cloud() and st.button("🔄 Re-coletar agora", key="tru_rerun"):
+            from collectors import truflation as _t
+            with st.spinner("Atualizando Truflation..."):
+                _res = _t.collect()
+            if _res.get("status") == "ok":
+                st.success(f"Atualizado — {_res['rows_upserted']} pontos.")
+                st.rerun()
+            else:
+                st.error(f"Falha: {_res.get('error', 'erro desconhecido')}")
 
 
 render_footer()
