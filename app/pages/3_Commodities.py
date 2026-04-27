@@ -12,6 +12,7 @@ from components.detail_panel import render_detail
 from services                import yfinance_service as yf_svc
 from services                import data_service     as data
 from services                import awesome_service  as fx_svc
+from services                import cepea_service    as cepea_svc
 from utils                   import fmt_currency_usd, fmt_currency_brl
 
 TRIED = ["yfinance", "stooq"]
@@ -174,7 +175,8 @@ st.markdown("---")
 
 
 # ══ AGRÍCOLAS ════════════════════════════════════════════════════════════════
-section_header("Agrícolas", "Soja, Milho, Trigo e Boi Gordo")
+section_header("Agrícolas — Bolsa internacional (USD)",
+               "Soja, Milho, Trigo e Boi Gordo (CME / CBOT)")
 c1, c2, c3, c4 = st.columns(4)
 _card(c1, "Soja",     "ZS=F")
 _card(c2, "Milho",    "ZC=F")
@@ -187,6 +189,49 @@ with ch1: _chart(hists["ZS=F"], "Soja",     "ZS=F", height=180)
 with ch2: _chart(hists["ZC=F"], "Milho",    "ZC=F", height=180)
 with ch3: _chart(hists["ZW=F"], "Trigo",    "ZW=F", height=180)
 with ch4: _chart(hists["LE=F"], "Boi Gordo","LE=F", height=180)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ══ AGRÍCOLAS BRASIL (BRL) ═══════════════════════════════════════════════════
+# Indicadores Cepea/Esalq (B3) — referencia para clientes que negociam fisico.
+_brl_q = cepea_svc.get_brl_quotes()
+_brl_dates = sorted({q.get("date") for q in _brl_q.values() if q.get("date")})
+_brl_subtitle = (
+    "Indicadores Cepea/Esalq · "
+    f"última atualização {_brl_dates[-1]}" if _brl_dates else
+    "Indicadores Cepea/Esalq · referência nacional para o mercado físico"
+)
+section_header("Agrícolas — Mercado físico Brasil (BRL)",
+               _brl_subtitle, source="Cepea/Esalq · noticiasagricolas")
+
+_BRL_COLORS = {
+    "soja":  "#26a269",
+    "milho": "#F5A623",
+    "trigo": "#D4A017",
+    "boi":   "#A0522D",
+}
+
+def _brl_card(col, code: str):
+    q = _brl_q.get(code, {})
+    cfg = cepea_svc.INDICATORS.get(code, {})
+    label = cfg.get("label", code)
+    with col:
+        if q.get("error") or q.get("price") is None:
+            error_card(label, tried=["cepea", "noticiasagricolas"])
+        else:
+            metric_card(
+                label,
+                fmt_currency_brl(q["price"]),
+                q.get("change_pct"),
+                hint=q.get("unit"),
+                tooltip=q.get("tooltip"),
+            )
+
+bc1, bc2, bc3, bc4 = st.columns(4)
+_brl_card(bc1, "soja")
+_brl_card(bc2, "milho")
+_brl_card(bc3, "trigo")
+_brl_card(bc4, "boi")
 
 
 # ── Detalhe por ticker ────────────────────────────────────────────────────────
