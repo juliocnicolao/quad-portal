@@ -215,6 +215,11 @@ def _brl_card(col, code: str):
     q = _brl_q.get(code, {})
     cfg = cepea_svc.INDICATORS.get(code, {})
     label = cfg.get("label", code)
+    region = q.get("region") or cfg.get("region")
+    unit   = q.get("unit")
+    # hint: "Paranaguá/PR · R$/saca 60kg"
+    hint_parts = [p for p in (region, unit) if p]
+    hint = " · ".join(hint_parts) if hint_parts else None
     with col:
         if q.get("error") or q.get("price") is None:
             error_card(label, tried=["cepea", "noticiasagricolas"])
@@ -223,7 +228,7 @@ def _brl_card(col, code: str):
                 label,
                 fmt_currency_brl(q["price"]),
                 q.get("change_pct"),
-                hint=q.get("unit"),
+                hint=hint,
                 tooltip=q.get("tooltip"),
             )
 

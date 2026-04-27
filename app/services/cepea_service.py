@@ -31,6 +31,7 @@ INDICATORS: dict[str, dict] = {
         "url":      "https://www.noticiasagricolas.com.br/cotacoes/soja",
         "title":    "Indicador da Soja ESALQ/B3 - Paranagu",  # final acentuado removido
         "unit":     "R$/saca 60kg",
+        "region":   "Paranaguá/PR",
         "label":    "Soja (R$/saca)",
         "tooltip":  "Indicador ESALQ/B3 Paranagua — referencia nacional para soja, "
                     "subjacente do contrato futuro de soja na B3.",
@@ -39,6 +40,7 @@ INDICATORS: dict[str, dict] = {
         "url":      "https://www.noticiasagricolas.com.br/cotacoes/milho",
         "title":    "Indicador do Milho Esalq/B3",
         "unit":     "R$/saca 60kg",
+        "region":   "Campinas/SP",
         "label":    "Milho (R$/saca)",
         "tooltip":  "Indicador ESALQ/B3 Campinas — referencia nacional para milho, "
                     "subjacente do contrato futuro de milho na B3.",
@@ -47,6 +49,7 @@ INDICATORS: dict[str, dict] = {
         "url":      "https://www.noticiasagricolas.com.br/cotacoes/boi",
         "title":    "Indicador do Boi Gordo Esalq / B3",
         "unit":     "R$/arroba",
+        "region":   "São Paulo (média 4 regiões)",
         "label":    "Boi Gordo (R$/@)",
         "tooltip":  "Indicador ESALQ/B3 do Boi Gordo (arroba de 15kg) — "
                     "subjacente do contrato futuro de boi gordo na B3.",
@@ -62,6 +65,7 @@ INDICATORS: dict[str, dict] = {
         "row_filter": "Paran",       # casa "Parana"/"Paran�" (encoding quebrado)
         "scale":      0.06,           # R$/t -> R$/saca 60kg
         "unit":       "R$/saca 60kg",
+        "region":     "Paraná",
         "label":      "Trigo (R$/saca)",
         "tooltip":   "Preco medio do Trigo Cepea/Esalq (Parana) — convertido "
                      "de R$/tonelada para R$/saca de 60kg (x 0,06).",
@@ -229,6 +233,7 @@ def get_brl_quotes(codes: list[str] | None = None) -> dict[str, dict]:
             "date":       row["date"],
             "label":      cfg["label"],
             "unit":       cfg["unit"],
+            "region":     cfg.get("region"),
             "tooltip":    cfg["tooltip"],
         }
 

@@ -45,12 +45,14 @@ _MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 # ─── resolucao de credenciais / modo ────────────────────────────────────────
 
 def _turso_creds() -> tuple[str | None, str | None]:
-    """Le TURSO_DATABASE_URL + TURSO_AUTH_TOKEN de env ou st.secrets."""
+    """Le TURSO_DATABASE_URL + TURSO_AUTH_TOKEN de env, st.secrets ou
+    .streamlit/secrets.toml (fallback pra scheduler CLI sem env vars)."""
     url = os.environ.get("TURSO_DATABASE_URL")
     tok = os.environ.get("TURSO_AUTH_TOKEN")
     if url and tok:
         return url, tok
-    # fallback: streamlit secrets — so se streamlit ja esta importado
+
+    # Fallback 1: streamlit secrets — so se streamlit ja esta importado
     # (evita trigger de CSRF warning quando rodado via CLI puro).
     import sys as _sys
     if "streamlit" in _sys.modules:
@@ -59,8 +61,26 @@ def _turso_creds() -> tuple[str | None, str | None]:
             sec = st.secrets
             url = url or sec.get("TURSO_DATABASE_URL")
             tok = tok or sec.get("TURSO_AUTH_TOKEN")
+            if url and tok:
+                return url, tok
         except Exception:
             pass
+
+    # Fallback 2: ler .streamlit/secrets.toml direto (scheduler/CLI).
+    # Usa tomllib (Python 3.11+) — sem dependencia extra. Sem essa leitura,
+    # o scheduler rodando via Task Scheduler escreve no SQLite local em vez
+    # de no Turso, deixando a Cloud com dados stale.
+    secrets_path = _REPO_ROOT / ".streamlit" / "secrets.toml"
+    if secrets_path.exists():
+        try:
+            import tomllib
+            with secrets_path.open("rb") as f:
+                data = tomllib.load(f)
+            url = url or data.get("TURSO_DATABASE_URL")
+            tok = tok or data.get("TURSO_AUTH_TOKEN")
+        except Exception as ex:
+            _log.warning("falha lendo secrets.toml: %s", ex)
+
     return url, tok
 
 
