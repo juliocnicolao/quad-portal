@@ -26,9 +26,14 @@ def _stamp(d: dict, source: str) -> dict:
 # ── Quotes ───────────────────────────────────────────────────────────────────
 
 def quote(ticker: str, *, br: bool = False) -> dict:
-    """Cascade: [brapi (if br)] → yfinance → stooq.
+    """Cascade: [brapi (if br)] → yfinance → stooq → history-derived.
 
     Retorna sempre dict com chaves: ticker, price, change_pct, error, source.
+
+    Fallback final: se todas as quote APIs falharem mas a serie historica
+    estiver disponivel (cache do yfinance/stooq), deriva preco e var% das
+    duas ultimas linhas de Close. Cobre o caso do Streamlit Cloud rate-limit
+    onde history funciona mas o endpoint de quote curta falha intermitente.
     """
     if br:
         q = brapi.get_quote(ticker)
@@ -42,6 +47,24 @@ def quote(ticker: str, *, br: bool = False) -> dict:
     q = stooq.get_quote(ticker)
     if not q.get("error") and q.get("price") is not None:
         return _stamp(q, "stooq")
+
+    # Fallback: derivar de history (yfinance ou stooq, ja cacheados se a UI
+    # tambem os usa para grafico). Custo zero quando ja em cache.
+    try:
+        df = history(ticker, period="1mo")
+        if df is not None and not df.empty and "Close" in df.columns:
+            closes = df["Close"].dropna()
+            if not closes.empty:
+                price = float(closes.iloc[-1])
+                prev  = float(closes.iloc[-2]) if len(closes) >= 2 else price
+                chg   = ((price - prev) / prev * 100) if prev else 0.0
+                src   = df.attrs.get("source", "history") + "-hist"
+                return _stamp({
+                    "ticker": ticker, "price": price, "prev_close": prev,
+                    "change_pct": chg, "error": False,
+                }, src)
+    except Exception:
+        pass
 
     return _stamp(
         {"ticker": ticker, "price": None, "change_pct": None, "error": True,
